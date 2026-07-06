@@ -87,6 +87,13 @@ recreated before they use the new logging driver. The installer does not
 restart Docker by default. If `/etc/docker/daemon.json` is a symlink, the
 installer refuses to replace it; merge that case manually.
 
+When `dockerd` is available, install and strict checks also run
+`dockerd --validate --config-file` against the daemon JSON. That validates the
+config file itself, but it cannot prove that the host's Docker service command
+line has no duplicate flags. If your Docker service starts `dockerd` with
+`--log-driver` or `--log-opt`, remove those flags or merge the logging policy
+manually before restarting Docker.
+
 For files owned by this repo, the installer also refuses to replace symlink or
 non-regular destinations. Move or resolve those manually before installing.
 

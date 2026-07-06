@@ -169,6 +169,18 @@ print_next_steps() {
     fi
 }
 
+validate_dockerd_config() {
+    config_path=$1
+    if command -v dockerd >/dev/null 2>&1; then
+        if ! dockerd --validate --config-file "$config_path" >/dev/null 2>&1; then
+            echo "Docker daemon rejected config file: $config_path" >&2
+            echo "Run: dockerd --validate --config-file $config_path" >&2
+            exit 1
+        fi
+        echo "Docker daemon accepted config file: $config_path"
+    fi
+}
+
 install_file() {
     src=$1
     dst=$2
@@ -318,6 +330,7 @@ if [ "$SKIP_DOCKER_CONFIG" -eq 0 ]; then
         "$REPO_DIR/lib/merge-docker-daemon.py" \
             --daemon-json "$DAEMON_JSON" \
             --policy-json "$REPO_DIR/fixtures/docker/daemon-log-policy.json"
+        validate_dockerd_config "$DAEMON_JSON"
     fi
 fi
 

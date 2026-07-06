@@ -21,6 +21,7 @@ for script in \
     "$REPO_DIR/tests/30_functionality.sh" \
     "$REPO_DIR/tests/40_docs_contract.sh" \
     "$REPO_DIR/tests/root-metadata.sh" \
+    "$REPO_DIR/tests/fixtures/fake-dockerd.sh" \
     "$REPO_DIR/tests/lib/require-container.sh" \
     "$REPO_DIR/tests/fixtures/fake-docker.sh"
 do

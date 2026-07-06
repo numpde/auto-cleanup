@@ -112,6 +112,25 @@ PATH="$FAKE_ROOT/no-python-bin" "$REPO_DIR/scripts/install.sh" \
     --skip-btmp-logrotate \
     --skip-apt-periodic >/dev/null
 
+mkdir -p "$FAKE_ROOT/dockerd-bin"
+for cmd in awk dirname grep python3; do
+    if command -v "$cmd" >/dev/null 2>&1; then
+        ln -s "$(command -v "$cmd")" "$FAKE_ROOT/dockerd-bin/$cmd"
+    fi
+done
+ln -s "$REPO_DIR/tests/fixtures/fake-dockerd.sh" "$FAKE_ROOT/dockerd-bin/dockerd"
+FAKE_DOCKERD_LOG="$FAKE_ROOT/dockerd-accept.log" \
+    PATH="$FAKE_ROOT/dockerd-bin" \
+    "$REPO_DIR/scripts/check.sh" --root "$ROOT" --strict >/dev/null
+grep -q -- '--validate --config-file' "$FAKE_ROOT/dockerd-accept.log"
+if FAKE_DOCKERD_LOG="$FAKE_ROOT/dockerd-reject.log" \
+    FAKE_DOCKERD_MODE=reject \
+    PATH="$FAKE_ROOT/dockerd-bin" \
+    "$REPO_DIR/scripts/check.sh" --root "$ROOT" --strict >/dev/null 2>&1; then
+    echo "check unexpectedly accepted dockerd-rejected daemon config" >&2
+    exit 1
+fi
+
 if command -v logrotate >/dev/null 2>&1; then
     LOGROTATE_STATE="$ROOT/logrotate-state"
     logrotate -d -s "$LOGROTATE_STATE" "$REPO_DIR/fixtures/logrotate/btmp" >/dev/null 2>&1

@@ -137,6 +137,20 @@ is_plain_file() {
     [ -f "$path" ] && [ ! -L "$path" ]
 }
 
+check_dockerd_config() {
+    config_path=$1
+    if command -v dockerd >/dev/null 2>&1; then
+        if dockerd --validate --config-file "$config_path" >/dev/null 2>&1; then
+            echo "ok      Docker daemon config validates with dockerd"
+        else
+            echo "bad     Docker daemon config rejected by dockerd"
+            FAILED=1
+        fi
+    else
+        echo "info    dockerd not found; skipped Docker daemon startup validation"
+    fi
+}
+
 validate_path --prefix "$PREFIX"
 validate_path --etc-dir "$ETC_DIR"
 if [ -n "$ROOT" ]; then
@@ -237,6 +251,7 @@ PY
                 echo "bad     Docker daemon log policy"
                 FAILED=1
             fi
+            check_dockerd_config "$daemon_json"
         fi
     fi
 fi
