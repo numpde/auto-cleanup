@@ -14,20 +14,51 @@ if [ "${1:-}" = "info" ]; then
 fi
 
 case "$mode:$*" in
+    buildx-reserved:builder\ prune\ --help|fallback:builder\ prune\ --help)
+        echo "Usage: docker builder prune"
+        exit 0
+        ;;
     buildx-reserved:buildx\ prune\ --help)
         echo "Usage: docker buildx prune"
         echo "      --reserved-space bytes"
+        exit 0
         ;;
     classic-keep:builder\ prune\ --help)
         echo "      --keep-storage bytes"
+        exit 0
         ;;
     builder-reserved:builder\ prune\ --help)
         echo "      --reserved-space bytes"
+        exit 0
         ;;
     no-builder:builder\ prune\ --help|no-builder:buildx\ prune\ --help)
         exit 1
         ;;
 esac
 
-exit 0
+case "$*" in
+    container\ prune\ -f\ --filter\ until=*|network\ prune\ -f\ --filter\ until=*|image\ prune\ -af\ --filter\ until=*)
+        exit 0
+        ;;
+esac
 
+case "$mode:$*" in
+    buildx-reserved:builder\ prune\ -af\ --filter\ until=*)
+        exit 0
+        ;;
+    buildx-reserved:buildx\ prune\ -af\ --filter\ until=*\ --reserved-space\ *)
+        exit 0
+        ;;
+    classic-keep:builder\ prune\ -af\ --filter\ until=*\ --keep-storage\ *)
+        exit 0
+        ;;
+    builder-reserved:builder\ prune\ -af\ --filter\ until=*\ --reserved-space\ *)
+        exit 0
+        ;;
+    fallback:builder\ prune\ -af\ --filter\ until=*)
+        exit 0
+        ;;
+esac
+
+echo "unexpected fake Docker invocation for mode $mode: $*" >&2
+exit 2

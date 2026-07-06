@@ -1,5 +1,8 @@
 # Optional overrides for vps-docker-clean.service.
 # Install manually as /etc/default/vps-docker-clean if needed.
+# DOCKER must be an executable name or path, not a command line with arguments.
+# *_UNTIL values use Docker prune duration syntax, for example 24h or 168h.
+# BUILD_CACHE_RESERVED uses Docker storage units, for example 512MB or 2GB.
 
 # DOCKER=docker
 # BUILD_CACHE_UNTIL=168h

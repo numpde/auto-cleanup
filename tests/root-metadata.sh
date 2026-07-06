@@ -23,6 +23,18 @@ if awk '$2 == "00000000" && $1 != "lo" { found = 1 } END { exit found ? 0 : 1 }'
     echo "default network route is present in root metadata lane" >&2
     exit 1
 fi
+if touch /work/.auto-cleanup-root-write-test 2>/dev/null; then
+    echo "/work is unexpectedly writable in root metadata lane" >&2
+    rm -f /work/.auto-cleanup-root-write-test
+    exit 1
+fi
+printf '%s\n' '#!/bin/sh' 'exit 0' > /tmp/auto-cleanup-root-posture-exec
+chmod +x /tmp/auto-cleanup-root-posture-exec
+if /tmp/auto-cleanup-root-posture-exec 2>/dev/null; then
+    echo "/tmp is executable in root metadata lane; expected noexec" >&2
+    exit 1
+fi
+rm -f /tmp/auto-cleanup-root-posture-exec
 
 ROOT=$(mktemp -d "${TMPDIR:-/run/auto-cleanup-test}/auto-cleanup-root-meta.XXXXXX")
 cleanup() {

@@ -117,8 +117,9 @@ usable as the service manager. Service actions are skipped automatically with
 configured system directories.
 
 Custom `--root`, `--prefix`, and `--etc-dir` values must be absolute paths
-other than `/`, must not start with `//`, and must not contain whitespace, `&`,
-`|`, backslashes, `%`, `#`, `;`, `$`, quotes, or backticks.
+other than `/`, must not start with `//`, must not contain `.` or `..` path
+components, and must not contain whitespace, `&`, `|`, backslashes, `%`, `#`,
+`;`, `$`, quotes, or backticks.
 
 Script dependencies are intentionally small: POSIX `/bin/sh` and standard tools
 such as `install`, `sed`, `grep`, and `awk`. Run scripts from a complete
@@ -159,6 +160,7 @@ sudo ./scripts/uninstall.sh
 
 Useful uninstall switches:
 
+- `--dry-run` prints intended removals without removing files.
 - `--root DIR`, `--prefix DIR`, and `--etc-dir DIR` match install paths.
 - `--restore-docker-backup FILE` restores an explicit daemon backup.
 - `--skip-journald`, `--skip-btmp-logrotate`, and `--skip-apt-periodic`
