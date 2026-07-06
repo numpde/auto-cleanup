@@ -92,9 +92,11 @@ for entrypoint in "$REPO_DIR"/tests/*.sh; do
     require_text "$entrypoint" "require-container.sh"
 done
 
-for ignored in .git .agents .codex __pycache__ .pytest_cache tmp; do
-    require_text "$REPO_DIR/.dockerignore" "$ignored"
-done
+test "$(sed -n '1p' "$REPO_DIR/.dockerignore")" = "*"
+require_text "$REPO_DIR/.dockerignore" "!fixtures/**"
+require_text "$REPO_DIR/.dockerignore" "!scripts/**"
+require_text "$REPO_DIR/.dockerignore" "!tests/**"
+require_text "$REPO_DIR/.dockerignore" "!notes/001_containerized_test_strategy.txt"
 for absent in .git .agents .codex; do
     if [ -e "$REPO_DIR/$absent" ]; then
         echo "ignored host state reached test image: $absent" >&2

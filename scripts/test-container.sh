@@ -172,6 +172,9 @@ run_build_context_canary() {
   printf '%s\n' "$canary" > "$tmp_context/.codex/$canary"
   printf '%s\n' "$canary" > "$tmp_context/__pycache__/$canary.pyc"
   printf '%s\n' "$canary" > "$tmp_context/tmp/$canary.tmp"
+  printf '%s\n' "$canary" > "$tmp_context/.env"
+  printf '%s\n' "$canary" > "$tmp_context/id_rsa"
+  printf '%s\n' "$canary" > "$tmp_context/local.log"
   build_image "$lane" "$tmp_context"
   image_tag=$(lane_image_tag "$lane")
   "$docker_cli" run \
@@ -189,7 +192,7 @@ run_build_context_canary() {
     --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777 \
     --workdir /work \
     "$image_tag" /bin/sh -eu -c \
-      'for path in ".git" ".agents" ".codex" "__pycache__" "tmp"; do test ! -e "/work/$path"; done'
+      'for path in ".git" ".agents" ".codex" "__pycache__" "tmp" ".env" "id_rsa" "local.log"; do test ! -e "/work/$path"; done'
   cleanup_context
   trap - EXIT
   echo "build context canary ok"
