@@ -332,6 +332,9 @@ default_etc_install_output=$("$REPO_DIR/scripts/install.sh" \
     --skip-btmp-logrotate \
     --skip-apt-periodic)
 printf '%s\n' "$default_etc_install_output" | grep -q 'would run: systemctl daemon-reload'
+printf '%s\n' "$default_etc_install_output" | grep -q 'After a real install, quick verification:'
+printf '%s\n' "$default_etc_install_output" | grep -q 'systemctl status vps-docker-clean.timer'
+printf '%s\n' "$default_etc_install_output" | grep -q 'systemctl list-timers vps-docker-clean.timer'
 no_service_install_output=$("$REPO_DIR/scripts/install.sh" \
     --dry-run \
     --no-service-actions \
@@ -341,6 +344,10 @@ no_service_install_output=$("$REPO_DIR/scripts/install.sh" \
     --skip-apt-periodic)
 if printf '%s\n' "$no_service_install_output" | grep -q 'would run: systemctl'; then
     echo "install unexpectedly ran systemctl actions with --no-service-actions" >&2
+    exit 1
+fi
+if printf '%s\n' "$no_service_install_output" | grep -q 'Quick verification:'; then
+    echo "install unexpectedly printed systemd next steps with --no-service-actions" >&2
     exit 1
 fi
 no_service_uninstall_output=$("$REPO_DIR/scripts/uninstall.sh" \
@@ -367,6 +374,10 @@ DRY_ROOT="$MERGE_ROOT/dry-run"
 dry_run_output=$("$REPO_DIR/scripts/install.sh" --root "$DRY_ROOT" --dry-run)
 printf '%s\n' "$dry_run_output" | grep -q 'would install:'
 test "$(printf '%s\n' "$dry_run_output" | tail -n 1)" = "Dry-run complete; no files were installed."
+if printf '%s\n' "$dry_run_output" | grep -q 'Quick verification:'; then
+    echo "staged dry-run unexpectedly printed host next steps" >&2
+    exit 1
+fi
 if printf '%s\n' "$dry_run_output" | grep -Eq '/tmp/tmp|would run: install'; then
     echo "dry-run install output exposed low-level install details" >&2
     exit 1

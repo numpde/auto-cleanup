@@ -134,6 +134,41 @@ run() {
     fi
 }
 
+print_next_steps() {
+    if [ -n "$ROOT" ] || [ "$ETC_DIR" != "/etc" ] || [ "$PREFIX" != "/usr/local" ]; then
+        return
+    fi
+    if [ "$SYSTEMD_ACTIONS" -ne 1 ] || ! command -v systemctl >/dev/null 2>&1; then
+        return
+    fi
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        echo
+        echo "After a real install, quick verification:"
+    else
+        echo
+        echo "Quick verification:"
+    fi
+    echo
+    echo "  systemctl status vps-docker-clean.timer"
+    echo "  systemctl list-timers vps-docker-clean.timer"
+    if [ "$SKIP_DOCKER_CONFIG" -eq 0 ]; then
+        echo "  cat /etc/docker/daemon.json"
+    fi
+
+    if [ "$SKIP_DOCKER_CONFIG" -eq 0 ] && [ "$RESTART_DOCKER" -eq 0 ]; then
+        echo
+        if [ "$DRY_RUN" -eq 1 ]; then
+            echo "For Docker defaults to apply after a real install:"
+        else
+            echo "For Docker defaults to apply later:"
+        fi
+        echo
+        echo "  systemctl restart docker"
+        echo "  docker compose up -d --force-recreate"
+    fi
+}
+
 install_file() {
     src=$1
     dst=$2
@@ -316,6 +351,8 @@ if [ "$SYSTEMD_ACTIONS" -eq 1 ] && command -v systemctl >/dev/null 2>&1; then
 else
     echo "Skipped systemd service actions."
 fi
+
+print_next_steps
 
 if [ "$DRY_RUN" -eq 1 ]; then
     echo "Dry-run complete; no files were installed."
