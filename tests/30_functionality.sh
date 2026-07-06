@@ -873,7 +873,11 @@ FAKE_DOCKER_LOG="$FAKE_ROOT/docker.log" \
     DOCKER="$REPO_DIR/tests/fixtures/fake-docker.sh" \
     "$REPO_DIR/fixtures/bin/vps-docker-clean" >/dev/null
 
-grep -q -- 'buildx prune -af --filter until=24h --reserved-space 512MB' "$FAKE_ROOT/docker.log"
+grep -q -- 'builder prune -af --filter until=24h' "$FAKE_ROOT/docker.log"
+if grep -q -- 'buildx prune' "$FAKE_ROOT/docker.log"; then
+    echo "cleanup script used buildx without ALLOW_BUILDX_PRUNE=1" >&2
+    exit 1
+fi
 grep -q -- 'container prune -f --filter until=48h' "$FAKE_ROOT/docker.log"
 grep -q -- 'network prune -f --filter until=72h' "$FAKE_ROOT/docker.log"
 grep -q -- 'image prune -af --filter until=1440h' "$FAKE_ROOT/docker.log"
@@ -881,6 +885,16 @@ if grep -Eq 'volume prune|--volumes' "$FAKE_ROOT/docker.log"; then
     echo "cleanup script attempted volume pruning" >&2
     exit 1
 fi
+
+FAKE_DOCKER_LOG="$FAKE_ROOT/docker-buildx-opt-in.log" \
+    FAKE_DOCKER_MODE=buildx-reserved \
+    ALLOW_BUILDX_PRUNE=1 \
+    BUILD_CACHE_UNTIL=24h \
+    BUILD_CACHE_RESERVED=512MB \
+    DOCKER="$REPO_DIR/tests/fixtures/fake-docker.sh" \
+    "$REPO_DIR/fixtures/bin/vps-docker-clean" >/dev/null
+grep -q -- 'buildx prune -af --filter until=24h --reserved-space 512MB' \
+    "$FAKE_ROOT/docker-buildx-opt-in.log"
 
 FAKE_DOCKER_LOG="$FAKE_ROOT/docker-classic.log" \
     FAKE_DOCKER_MODE=classic-keep \

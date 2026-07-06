@@ -7,6 +7,7 @@ BUILD_CACHE_RESERVED=${BUILD_CACHE_RESERVED:-1GB}
 CONTAINER_UNTIL=${CONTAINER_UNTIL:-168h}
 NETWORK_UNTIL=${NETWORK_UNTIL:-168h}
 IMAGE_UNTIL=${IMAGE_UNTIL:-720h}
+ALLOW_BUILDX_PRUNE=${ALLOW_BUILDX_PRUNE:-0}
 
 if ! command -v "$DOCKER" >/dev/null 2>&1; then
     echo "Docker CLI not found; skipping cleanup."
@@ -41,7 +42,7 @@ elif help_has "$builder_help" '--reserved-space'; then
     run_docker builder prune -af \
         --filter "until=$BUILD_CACHE_UNTIL" \
         --reserved-space "$BUILD_CACHE_RESERVED"
-else
+elif [ "$ALLOW_BUILDX_PRUNE" = "1" ]; then
     buildx_help=
     buildx_help=$("$DOCKER" buildx prune --help 2>&1 || true)
     if help_has "$buildx_help" '--reserved-space'; then
@@ -53,6 +54,10 @@ else
     else
         echo "Docker build-cache prune command not available; skipping build-cache cleanup."
     fi
+elif [ "$builder_prune_available" -eq 1 ]; then
+    run_docker builder prune -af --filter "until=$BUILD_CACHE_UNTIL"
+else
+    echo "Docker build-cache prune command not available; skipping build-cache cleanup."
 fi
 
 run_docker container prune -f --filter "until=$CONTAINER_UNTIL"

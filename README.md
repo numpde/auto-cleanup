@@ -229,10 +229,14 @@ interval there or install with `--skip-apt-periodic`.
 The Docker cleanup script checks which builder-cache retention command the
 local Docker CLI supports. Classic `docker builder prune` uses
 `--keep-storage`; newer builder/Buildx prune commands may advertise
-`--reserved-space`. If neither storage-reservation flag is advertised, the
-script still prunes old build cache but skips the reservation flag. If no
-supported build-cache prune command is available, it skips build-cache cleanup
-and continues with the other safe Docker prune steps.
+`--reserved-space`. The default path stays on `docker builder prune` so cleanup
+targets the local Docker builder cache. If neither builder storage-reservation
+flag is advertised, the script still prunes old local build cache but skips the
+reservation flag. `docker buildx prune` is used only when
+`ALLOW_BUILDX_PRUNE=1` is set, because Buildx prunes the selected builder,
+which may be remote, shared, or otherwise different from the local builder. If
+no supported build-cache prune command is available, it skips build-cache
+cleanup and continues with the other safe Docker prune steps.
 
 If the Docker CLI is missing or the Docker daemon is not reachable, the cleanup
 script exits successfully without pruning. That avoids noisy timer failures on
@@ -251,6 +255,8 @@ The installed cleanup script accepts these optional environment overrides.
 - `CONTAINER_UNTIL`, default `168h`
 - `NETWORK_UNTIL`, default `168h`
 - `IMAGE_UNTIL`, default `720h`
+- `ALLOW_BUILDX_PRUNE`, default `0`; set to `1` only when the selected Buildx
+  builder is safe for this timer to prune
 
 For timer runs, place overrides in `/etc/default/vps-docker-clean`, for example:
 
