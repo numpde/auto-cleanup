@@ -127,6 +127,29 @@ run() {
     fi
 }
 
+print_restore_next_steps() {
+    if [ -z "$RESTORE_DOCKER_BACKUP" ]; then
+        return
+    fi
+    if [ -n "$ROOT" ] || [ "$ETC_DIR" != "/etc" ]; then
+        return
+    fi
+    if [ "$SYSTEMD_ACTIONS" -ne 1 ] || ! command -v systemctl >/dev/null 2>&1; then
+        return
+    fi
+
+    echo
+    if [ "$DRY_RUN" -eq 1 ]; then
+        echo "After restoring Docker daemon config in a real uninstall:"
+    else
+        echo "After restoring Docker daemon config:"
+    fi
+    echo
+    echo "  systemctl restart docker"
+    echo "  # then recreate each Compose-managed workload from that workload's Compose project directory:"
+    echo "  docker compose up -d --force-recreate"
+}
+
 remove_file() {
     path=$1
     if [ -L "$path" ]; then
@@ -203,6 +226,8 @@ if [ "$SYSTEMD_ACTIONS" -eq 1 ] && command -v systemctl >/dev/null 2>&1; then
         run systemctl restart systemd-journald
     fi
 fi
+
+print_restore_next_steps
 
 if [ "$DRY_RUN" -eq 1 ]; then
     echo "Dry-run complete; no files were removed."

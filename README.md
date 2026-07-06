@@ -128,8 +128,10 @@ Docker daemon JSON management is enabled.
 At runtime, the installed policy assumes a systemd-based host with logrotate
 and the distro's APT periodic timer machinery available.
 
-After install, restart Docker and recreate containers when convenient. For
-Compose-managed containers, that usually looks like:
+After install, restart Docker when convenient. Existing containers must then be
+recreated before they use the new daemon logging defaults. For Compose-managed
+workloads, run the Compose command from each workload's own Compose project
+directory:
 
 ```sh
 sudo systemctl restart docker
@@ -195,6 +197,10 @@ a regular file, not a symlink. The restore destination
 `/etc/docker/daemon.json` must not be a symlink or other non-regular file.
 When `--root` is used, the backup path is still read from the current
 filesystem; only the restore destination is staged under `--root`.
+
+After restoring a Docker daemon backup on a real host, restart Docker and
+recreate affected containers when convenient so the restored daemon settings are
+actually in use.
 
 ## Notes
 

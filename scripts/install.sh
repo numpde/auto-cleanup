@@ -165,6 +165,7 @@ print_next_steps() {
         fi
         echo
         echo "  systemctl restart docker"
+        echo "  # then recreate each Compose-managed workload from that workload's Compose project directory:"
         echo "  docker compose up -d --force-recreate"
     fi
 }

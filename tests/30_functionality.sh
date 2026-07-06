@@ -364,6 +364,12 @@ printf '%s\n' "$default_etc_install_output" | grep -q 'would run: systemctl daem
 printf '%s\n' "$default_etc_install_output" | grep -q 'After a real install, quick verification:'
 printf '%s\n' "$default_etc_install_output" | grep -q 'systemctl status vps-docker-clean.timer'
 printf '%s\n' "$default_etc_install_output" | grep -q 'systemctl list-timers vps-docker-clean.timer'
+docker_next_steps_output=$("$REPO_DIR/scripts/install.sh" \
+    --dry-run \
+    --skip-journald \
+    --skip-btmp-logrotate \
+    --skip-apt-periodic)
+printf '%s\n' "$docker_next_steps_output" | grep -q "from that workload's Compose project directory"
 no_service_install_output=$("$REPO_DIR/scripts/install.sh" \
     --dry-run \
     --no-service-actions \
@@ -415,6 +421,12 @@ test ! -e "$DRY_ROOT/usr/local/sbin/vps-docker-clean"
 
 dry_uninstall_output=$("$REPO_DIR/scripts/uninstall.sh" --dry-run --no-service-actions)
 test "$(printf '%s\n' "$dry_uninstall_output" | tail -n 1)" = "Dry-run complete; no files were removed."
+
+restore_dry_run_output=$("$REPO_DIR/scripts/uninstall.sh" \
+    --dry-run \
+    --restore-docker-backup "$ROOT/backup/daemon.json")
+printf '%s\n' "$restore_dry_run_output" | grep -q 'After restoring Docker daemon config in a real uninstall:'
+printf '%s\n' "$restore_dry_run_output" | grep -q "from that workload's Compose project directory"
 
 mkdir -p "$MERGE_ROOT/bad/etc/docker"
 cat > "$MERGE_ROOT/bad/etc/docker/daemon.json" <<'EOF'
