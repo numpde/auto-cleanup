@@ -283,14 +283,20 @@ for script in install check uninstall; do
     expect_fail "$script --root /" "$REPO_DIR/scripts/$script.sh" --root /
     expect_fail "$script double-leading-slash --root" "$REPO_DIR/scripts/$script.sh" --root //tmp/auto-cleanup
     expect_fail "$script --root ////" "$REPO_DIR/scripts/$script.sh" --root ////
+    expect_fail "$script dot-component --root" "$REPO_DIR/scripts/$script.sh" --root /tmp/auto-cleanup/./stage
+    expect_fail "$script dotdot-component --root" "$REPO_DIR/scripts/$script.sh" --root /tmp/auto-cleanup/../victim
     expect_fail "$script space-containing --root" "$REPO_DIR/scripts/$script.sh" --root "/tmp/auto cleanup space"
     expect_fail "$script backslash-containing --root" "$REPO_DIR/scripts/$script.sh" --root "/tmp/auto\\cleanup"
     expect_fail "$script --prefix /" "$REPO_DIR/scripts/$script.sh" --prefix /
+    expect_fail "$script dot-component --prefix" "$REPO_DIR/scripts/$script.sh" --prefix /opt/./auto-cleanup
+    expect_fail "$script dotdot-component --prefix" "$REPO_DIR/scripts/$script.sh" --prefix /../auto-cleanup
     expect_fail "$script ampersand-containing --prefix" "$REPO_DIR/scripts/$script.sh" --prefix "/opt/auto&cleanup"
     expect_fail "$script percent-containing --prefix" "$REPO_DIR/scripts/$script.sh" --prefix "/opt/auto%cleanup"
     expect_fail "$script dollar-containing --prefix" "$REPO_DIR/scripts/$script.sh" --prefix '/opt/auto$cleanup'
     expect_fail "$script quote-containing --prefix" "$REPO_DIR/scripts/$script.sh" --prefix '/opt/auto"cleanup'
     expect_fail "$script relative --etc-dir" "$REPO_DIR/scripts/$script.sh" --etc-dir relative-etc
+    expect_fail "$script dot-component --etc-dir" "$REPO_DIR/scripts/$script.sh" --etc-dir /etc/./auto-cleanup
+    expect_fail "$script dotdot-component --etc-dir" "$REPO_DIR/scripts/$script.sh" --etc-dir /../etc
     expect_fail "$script pipe-containing --etc-dir" "$REPO_DIR/scripts/$script.sh" --etc-dir "/etc/auto|cleanup"
     expect_fail "$script hash-containing --etc-dir" "$REPO_DIR/scripts/$script.sh" --etc-dir "/etc/auto#cleanup"
     expect_fail "$script semicolon-containing --etc-dir" "$REPO_DIR/scripts/$script.sh" --etc-dir "/etc/auto;cleanup"
@@ -301,6 +307,10 @@ expect_fail "uninstall relative Docker backup" \
     "$REPO_DIR/scripts/uninstall.sh" --restore-docker-backup daemon.json.auto-cleanup.bak
 expect_fail "uninstall double-leading-slash Docker backup" \
     "$REPO_DIR/scripts/uninstall.sh" --restore-docker-backup //tmp/daemon.json.auto-cleanup.bak
+expect_fail "uninstall dot-component Docker backup" \
+    "$REPO_DIR/scripts/uninstall.sh" --restore-docker-backup /tmp/./daemon.json.auto-cleanup.bak
+expect_fail "uninstall dotdot-component Docker backup" \
+    "$REPO_DIR/scripts/uninstall.sh" --restore-docker-backup /tmp/../daemon.json.auto-cleanup.bak
 expect_fail "uninstall shell-metachar Docker backup" \
     "$REPO_DIR/scripts/uninstall.sh" --restore-docker-backup '/tmp/daemon$backup.json'
 

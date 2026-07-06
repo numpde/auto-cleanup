@@ -28,6 +28,12 @@ validate_path() {
         echo "$name must not be /" >&2
         exit 2
     fi
+    case "$value" in
+        */./*|*/../*|*/.|*/..)
+            echo "$name must not contain '.' or '..' path components: $value" >&2
+            exit 2
+            ;;
+    esac
     if printf '%s\n' "$value" | grep -q '[[:space:]&|\\%#;]'; then
         echo "$name must not contain whitespace, '&', '|', '\\', '%', '#', or ';': $value" >&2
         exit 2
