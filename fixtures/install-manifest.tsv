@@ -1,0 +1,6 @@
+file	0755	fixtures/bin/vps-docker-clean	/usr/local/sbin/vps-docker-clean
+template	0644	fixtures/systemd/vps-docker-clean.service	/etc/systemd/system/vps-docker-clean.service
+file	0644	fixtures/systemd/vps-docker-clean.timer	/etc/systemd/system/vps-docker-clean.timer
+file	0644	fixtures/journald/limits.conf	/etc/systemd/journald.conf.d/auto-cleanup-limits.conf
+conditional	0644	fixtures/logrotate/btmp	/etc/logrotate.d/auto-cleanup-btmp
+conditional	0644	fixtures/apt/10periodic-cleanup	/etc/apt/apt.conf.d/90auto-cleanup-periodic

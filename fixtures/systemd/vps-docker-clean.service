@@ -1,0 +1,12 @@
+[Unit]
+Description=Safe Docker disk cleanup
+Documentation=https://docs.docker.com/engine/manage-resources/pruning/
+ConditionFileIsExecutable=@SBIN_DIR@/vps-docker-clean
+
+[Service]
+Type=oneshot
+EnvironmentFile=-@ETC_DIR@/default/vps-docker-clean
+ExecStart=@SBIN_DIR@/vps-docker-clean
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=30min

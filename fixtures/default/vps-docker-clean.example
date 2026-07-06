@@ -1,0 +1,9 @@
+# Optional overrides for vps-docker-clean.service.
+# Install manually as /etc/default/vps-docker-clean if needed.
+
+# DOCKER=docker
+# BUILD_CACHE_UNTIL=168h
+# BUILD_CACHE_RESERVED=1GB
+# CONTAINER_UNTIL=168h
+# NETWORK_UNTIL=168h
+# IMAGE_UNTIL=720h

@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly safe Docker disk cleanup
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=1h
+AccuracySec=1h
+
+[Install]
+WantedBy=timers.target

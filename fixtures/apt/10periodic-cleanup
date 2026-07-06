@@ -1,0 +1,4 @@
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::AutocleanInterval "7";
+APT::Periodic::CleanInterval "30";
+APT::Periodic::Verbose "1";

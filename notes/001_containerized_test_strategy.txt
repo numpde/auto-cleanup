@@ -1,0 +1,1260 @@
+Containerized test strategy
+===========================
+
+Purpose
+-------
+
+This note is an action plan, not a raw wishlist. It turns the requirement
+"containerized tests only" into a staged engineering program for this repo's
+actual risk: an operator toolkit that installs cleanup policy and therefore
+must not let tests normalize host mutation, hidden host dependencies, or unsafe
+cleanup behavior.
+
+The plan deliberately separates:
+
+- containment boundary
+- harness posture
+- functional installer/uninstaller contracts
+- cleanup-policy semantics
+- distro compatibility
+- optional CI
+
+Do not treat the checklist as permission to make broad mechanical churn. Each
+stage should make the repository more coherent on its own.
+
+Context
+-------
+
+This repository is an operator toolkit for installing small VPS cleanup
+policies. The risk profile is different from an application repository:
+incorrect tests can accidentally normalize host mutation, sudo habits, Docker
+socket access, or partial installs. The test harness therefore needs to be part
+of the safety contract, not a convenience wrapper around host scripts.
+
+Limits of confidence
+--------------------
+
+Containerized tests can prove the repository's installer logic, file rendering,
+policy detection, refusal behavior, and cleanup-command construction under
+known Debian/Ubuntu userlands. They cannot fully prove that a real VPS service
+manager, Docker daemon, logrotate timer, or apt timer is configured correctly
+after a privileged install. That final operational verification should remain a
+small documented post-install check, not something hidden inside the automated
+test suite.
+
+The test suite should therefore avoid pretending to be a live VPS. It should
+prove that the repo will install the right artifacts safely and that the
+operator-facing commands are bounded and explicit.
+
+Threat model
+------------
+
+The test system is designed to defend against:
+
+- accidental host mutation while developing tests
+- tests passing only because the host happens to have certain tools installed
+- tests writing artifacts into the checkout
+- tests receiving host credentials, sockets, or service access
+- Docker cleanup tests accidentally reaching a real Docker daemon
+- installer tests normalizing partial writes or unsafe symlink behavior
+- private/local state leaking into the test image through build context
+- future maintainers weakening containment flags without noticing
+
+The test system is not designed to defend against a malicious maintainer who
+edits both the harness and the tests to hide bad behavior. Posture tests raise
+the cost of accidental weakening; they are not a substitute for code review.
+
+Hard requirements
+-----------------
+
+1. Tests are container-only.
+   Direct host execution of test entrypoints should fail closed. The supported
+   host action is only to build/run the test container.
+
+2. The repository must not be writable from tests.
+   The test runtime should not bind-mount the checkout read-write. The default
+   should be a copied-context test image so the running tests do not touch the
+   host checkout at all. If an interactive debug lane uses a bind mount, it must
+   be read-only.
+
+3. The test runtime must not touch host services or host state.
+   No host Docker socket, no sudo, no systemctl against the host, no host /tmp
+   writes, no host repo writes, no host network during test execution. The
+   unavoidable exception is outer container-engine state: building and running
+   an image necessarily uses the host Docker/Podman image store. The tests
+   themselves must not receive a path, socket, credential, or network route
+   that lets them mutate the host.
+
+4. Image inputs should be pinned intelligently.
+   Runtime base images should be named-release plus digest-pinned, for example
+   Debian 12/bookworm and Ubuntu 24.04/noble. Do not use floating "stable" or
+   "latest". Apt packages do not need exact version pins initially because
+   distro tool drift is useful signal for this repo; if CI becomes flaky, move
+   the test image to Debian/Ubuntu snapshot repos as a deliberate second step.
+
+5. Do not use Compose unless it buys something real.
+   This repo has no database, sidecar, internal network, or multi-service test
+   topology. Direct docker run is simpler and easier to audit. Compose is a
+   rejected default here. Keep DOCKER_CLI overridable, but do not claim Podman
+   support until the runner has actually been tested with Podman.
+
+Non-negotiable invariants
+-------------------------
+
+These are stronger than ordinary checklist items. If any invariant is broken,
+the test harness is not acceptable even if the functional assertions pass.
+
+- Functional tests must not run directly on the host.
+- Test containers must not receive the host Docker socket.
+- Test containers must not receive writable host path mounts.
+- The default verification lane must not receive any repository bind mount.
+- Test execution must not have runtime network access.
+- Test execution must not receive host credentials or host HOME.
+- The broad test lane must run as non-root.
+- Any root lane must be separate, narrow, and metadata-focused.
+- Docker cleanup behavior must be tested only with fake Docker commands.
+- README verification instructions must point to the containerized entrypoint.
+
+Decision frame
+--------------
+
+Prefer work that removes ambiguity from a boundary.
+
+Do not begin by splitting every test file, adding CI, or polishing the matrix.
+Those are useful only after the core host/test boundary is mechanically true.
+
+Use this ordering rule:
+
+1. Make host execution impossible for test entrypoints.
+2. Make the default test container maximally contained.
+3. Make the harness posture observable and testable.
+4. Make the installer/uninstaller contracts precise.
+5. Make cleanup-policy semantics explicit.
+6. Then broaden to distro matrix, root metadata, and CI.
+
+Before implementing any item, re-check the current code. This note is a plan,
+not authority over reality. A listed item can be stale, partially covered, or
+right about the smell with the wrong implementation shape.
+
+How to use this plan
+--------------------
+
+Work by iteration. Take the smallest current pressure, inspect the code, write
+the smallest truthful change, read it back, remove unearned structure, then
+check the adjacent boundaries it touched: tests, README, fixtures, wrapper
+posture, cleanup behavior, and failure output.
+
+Small slices are mandatory. A slice should be small enough that its boundary,
+risk, tests, and rollback story are obvious. If a change wants to touch the
+container runner, test splitting, README, fake Docker fixtures, and CI at once,
+it is too large. Finish the smallest coherent slice, read it back, and let that
+result teach the next slice.
+
+Prefer this loop:
+
+1. Pick one boundary.
+2. State the current smell in one sentence.
+3. Inspect the exact files that own it.
+4. Add or adjust one narrow check if behavior is observable.
+5. Make the smallest change that satisfies that check.
+6. Re-read the changed files and remove anything speculative.
+7. Run the narrow verification.
+8. Run the adjacent-boundary verification.
+9. Update the note/checklist if the work changed the plan.
+
+For every implementation slice:
+
+- [ ] I pledge to re-read the non-negotiable invariants before editing, inspect
+      the real code before trusting this plan, make the smallest truthful
+      change, read it back, delete unearned structure, check adjacent
+      boundaries, and stop only when the relevant "Done means" statement is
+      true.
+- [ ] State the boundary being improved.
+- [ ] Verify the current behavior in code before editing.
+- [ ] Prefer a narrow failing check first when behavior is observable.
+- [ ] Make the smallest change that eliminates the class of bug.
+- [ ] Read the change back and remove unearned abstraction.
+- [ ] Check adjacent boundaries before moving on.
+- [ ] Update docs when the operator-facing command changes.
+- [ ] Keep each commit to one coherent concern.
+
+Do not mark a stage complete merely because files changed. Mark it complete
+only when the stage's "Done means" statement is true.
+
+Assumption audit
+----------------
+
+Assumption: "Container-only" means the host may do nothing except run Docker.
+
+Decision: correct, but state the boundary precisely. The host wrapper may read
+the checkout as build context and may create image/layer/container metadata in
+the host container engine. It must not run repository tests, install package
+dependencies, write test artifacts into the checkout, mount host service
+sockets, or invoke host cleanup/systemd commands.
+
+Assumption: a read-only bind mount is enough.
+
+Decision: not for the default lane. A read-only bind mount prevents writes to
+the checkout, but it still gives the test process a live view of host files.
+The default lane should build an image from the checkout and run tests from the
+copied image filesystem. A debug shell may use a read-only bind mount only if
+it is clearly not the default verification lane.
+
+Assumption: digest-pinning the base image makes builds reproducible.
+
+Decision: only partially. Digest-pinning controls the starting filesystem, but
+apt package resolution still changes with repository state. That is acceptable
+at first because this project cares about current Debian/Ubuntu tool behavior.
+If reproducibility becomes more important than drift detection, switch to
+snapshot repositories and record the snapshot date.
+
+Assumption: noexec /tmp is easy.
+
+Decision: false with the current tests. They create executable fake Docker
+commands in tmp. The harness should not weaken /tmp for that convenience.
+Refactor fake commands into checked-in fixtures or invoke generated scripts via
+the shell so tmpfs can be noexec.
+
+Assumption: a root-in-container lane is dangerous.
+
+Decision: root is acceptable only as a narrow model of sudo-installed file
+metadata. It must not get network, user-provided host path mounts, the Docker
+socket, broad capabilities, or privileged mode. If ownership tests need
+CAP_CHOWN, grant only that capability to that lane and test that the broad lane
+does not have it.
+
+Best-practice synthesis
+-----------------------
+
+The local repo survey and Docker's own documentation point to the same shape:
+
+- Use small, trusted base images and avoid unnecessary packages. This keeps the
+  test image understandable and reduces unrelated vulnerability/noise surface.
+- Pin base images by named release plus digest. Docker documents that tags are
+  mutable and digest pins preserve the exact base image. The tradeoff is that
+  digest pinning opts out of automatic base-image fixes, so the plan also needs
+  an explicit update procedure.
+- Use .dockerignore deliberately. Docker removes ignored files from the build
+  context before sending it to the builder; that is exactly the control needed
+  to keep .git, agent metadata, caches, credentials, and local artifacts out of
+  the test image.
+- Prefer ephemeral containers. Tests should leave no container-local state
+  except the outer Docker image/cache metadata needed to run them.
+- Use --read-only only with explicit writable tmpfs mounts. Docker's run docs
+  describe read-only rootfs as prohibiting writes except to specified writable
+  mounts; this makes tmpfs locations part of the test contract.
+- Never mount the host Docker socket. Docker's run docs are clear that a
+  container with the Docker socket can create and manipulate the host daemon.
+  Fake Docker command fixtures are the right test double for this repo.
+- Use explicit runtime limits and privilege reduction: no-new-privileges,
+  cap-drop ALL, no privileged mode, no runtime network, PID/memory limits, and
+  a non-root default user.
+
+Base-image update policy
+------------------------
+
+Digest pins must not become stale by accident. Treat base-image refresh as a
+normal maintenance change:
+
+1. Update the named-release digest deliberately.
+2. Rebuild the test image from scratch.
+3. Run the full matrix.
+4. Review changes in apt/systemd/logrotate behavior as signal, not nuisance.
+5. Commit the digest change with any required fixture/test adjustments.
+
+Do not use floating tags to get silent updates. Silent updates make failures
+harder to explain and weaken the audit trail. If security scanning is added
+later, it should report stale pinned bases and drive explicit updates rather
+than mutating the base behind the suite.
+
+Chosen shape
+------------
+
+Use a direct container runner:
+
+    make test
+    make test/matrix
+    make test/root-container
+    make test/posture
+    make shell
+
+The Makefile should be the operator interface and should delegate to a small
+scripts/test-container.sh wrapper. The wrapper is easier to posture-test than a
+large Make recipe, while Make remains the discoverable command surface.
+
+The wrapper builds a test image from the current repository and runs tests from
+the image filesystem. Runtime uses no repository bind mount by default.
+
+Image build may use network to fetch distro packages. Test execution must use
+--network none. If fully offline builds become a requirement later, publish and
+pin the test image separately rather than weakening runtime isolation.
+
+Use `docker run --pull=never` for test execution. The image should have been
+built locally by the wrapper; runtime must not unexpectedly pull or resolve
+anything from a registry.
+
+Default test runtime posture:
+
+- --network none
+- --read-only
+- --cap-drop ALL
+- --security-opt no-new-privileges:true
+- non-root numeric user, preferably 65532:65532 in the default lane
+- no Docker socket
+- no privileged mode
+- CPU, PID, memory, and memory-swap limits
+- HOME under /tmp
+- PYTHONDONTWRITEBYTECODE=1
+- tmpfs /tmp with nosuid,nodev,noexec
+
+The noexec /tmp requirement matters. Current tests generate fake Docker
+executables under /tmp. That should be refactored before locking /tmp down:
+checked-in fake Docker command fixtures or a shell-dispatched fake command are
+better than executable files generated in writable tmp.
+
+The copied image context should include only files required by the tests.
+.dockerignore is therefore part of the test contract, not cleanup polish.
+
+The test Containerfile should use `COPY . /work` after a strict .dockerignore,
+not a runtime bind mount. Selective COPY lists are tempting, but they can hide
+packaging mistakes. For an installable operator repo, testing the ignored build
+context is closer to testing what a clone contains.
+
+The image build should not execute repository code. Build steps may install OS
+packages and copy the checkout, but tests should run only at container runtime
+under the locked runtime profile. This keeps build-time network/package access
+separate from test execution.
+
+Host wrapper responsibilities
+-----------------------------
+
+scripts/test-container.sh should be intentionally small and testable:
+
+- refuse to run as host uid 0 unless a narrowly named override is set
+- require the selected base image to come from an allowlisted matrix entry
+- reject matrix image refs that are not digest-pinned
+- build the image with an explicit tag derived from the matrix entry
+- run tests with --pull=never
+- pass only explicit environment variables into the container
+- never pass SSH agent, cloud credentials, Docker config, or host HOME
+- never use --env-file from the host
+- never mount /var/run/docker.sock
+- never mount the repository in the default test lane
+- print the exact image/matrix lane being run
+- clean up containers with --rm, but do not prune images/caches automatically
+
+The wrapper itself should have a posture test that reads it as text and also
+exercises a dry-run or `--print-run-command` mode. Text inspection is not
+perfect, but it catches accidental removal of critical flags.
+
+Base images
+-----------
+
+Primary image:
+
+- Debian 12/bookworm slim, digest-pinned.
+- Installs only the tools needed to test the operator contract:
+  dash, python3, logrotate, systemd/systemd-analyze, coreutils, findutils,
+  grep, sed, awk, util-linux if needed by the tests.
+
+Containerfile shape:
+
+- `ARG BASE_IMAGE=<named-release>@sha256:<digest>`
+- `FROM ${BASE_IMAGE}`
+- The wrapper may override BASE_IMAGE only with an allowlisted matrix value.
+- The wrapper should reject BASE_IMAGE values without `@sha256:`.
+
+Compatibility matrix:
+
+- Debian 12/bookworm slim, digest-pinned.
+- Ubuntu 24.04/noble base, digest-pinned.
+- Debian 13/trixie only after it is a stable release and the test image is
+  digest-pinned.
+
+Default local test can run Debian 12 only. CI should run at least Debian 12 and
+Ubuntu 24.04. Full matrix can be opt-in if build time matters.
+
+Why not a bind-mounted repo by default?
+--------------------------------------
+
+A read-only bind mount is acceptable for an explicitly marked debug shell, but
+a copied-context image is stricter for verification: the container cannot
+observe host-side file changes during a run, cannot write to the checkout by
+construction, and proves .dockerignore/image inputs are part of the contract.
+It also makes "tests do not touch the host" easier to reason about.
+
+The host still supplies the Docker build context. That is a read operation
+performed by the outer container engine before tests begin, not a runtime mount
+given to the test process.
+
+The tradeoff is rebuild latency. For this small repo that is acceptable.
+Provide make shell only for debugging, and if it mounts the repo, mount it
+read-only with the same runtime restrictions.
+
+Test entrypoint guards
+----------------------
+
+Every test script that can be executed directly should source a guard:
+
+    AUTO_CLEANUP_TEST_CONTAINER=1
+
+If the variable is absent, print a short error:
+
+    tests must run inside the test container; use: make test
+
+This is intentionally strict. It prevents local host tool versions from
+becoming the unreviewed test environment.
+
+Tests should also avoid depending only on the marker. A posture test should
+verify the runner actually sets the intended container flags.
+
+Test layout
+-----------
+
+The current tests/run.sh is valuable but too monolithic for the target
+contract. Split by responsibility:
+
+    Makefile
+    scripts/test-container.sh
+    containers/test/Containerfile
+    containers/root-test/Containerfile, only if truly needed
+    tests/run-all.sh
+    tests/00_syntax.sh
+    tests/01_manifest.sh
+    tests/02_container_posture.sh
+    tests/10_install_contract.sh
+    tests/11_uninstall_contract.sh
+    tests/20_docker_daemon_json.sh
+    tests/21_docker_cleanup_script.sh
+    tests/30_policy_detection.sh
+    tests/40_docs_contract.sh
+    tests/50_compat_smoke.sh
+    tests/lib/assert.sh
+    tests/lib/staged-root.sh
+    tests/fixtures/fake-docker.sh
+
+The exact names can change, but the split should remain contract-oriented:
+installer, uninstaller, Docker daemon merge, scheduled Docker cleanup, policy
+detection, docs, and harness posture.
+
+Do not split mechanically just to reduce file length. Split where the
+contract boundary is real and where failure messages become clearer.
+
+What the tests should prove
+---------------------------
+
+Source and package integrity:
+
+- Every manifest source exists.
+- Manifest modes match actual file modes.
+- Manifest destinations are absolute and unique.
+- Manifest destinations match the installer/uninstaller target list.
+- Runtime scripts are executable.
+- Config fixtures are 0644.
+- No unresolved template placeholders exist in rendered files.
+- No generated bytecode, caches, backups, or temp files are present.
+- .dockerignore excludes host-only state such as .git, .agents, .codex,
+  caches, bytecode, backups, and temp files.
+- The test image does not copy ignored host-only/private state.
+
+Shell portability:
+
+- sh -n and dash -n pass for all POSIX shell scripts.
+- Behavioral tests run under the distro /bin/sh, not bash by accident.
+- No Bash-only syntax appears in scripts that claim /bin/sh.
+
+Installer contract:
+
+- Default staged install creates exactly the expected file set and no extras
+  outside the staged root.
+- Custom --root, --prefix, and --etc-dir render correct paths.
+- --root and custom --etc-dir disable service actions.
+- --no-service-actions suppresses all systemctl calls.
+- --no-enable-timer does not enable/start the timer.
+- --restart-docker is opt-in.
+- Dry-run writes nothing and prints only high-level intended actions.
+- Partial checkout fails before installing anything.
+- Missing fixture/helper fails before installing anything.
+- Invalid existing Docker daemon JSON fails before unrelated file writes.
+- --skip-docker-config removes the Python requirement and leaves daemon JSON
+  untouched.
+- Component skip flags install only the remaining requested policies.
+
+Filesystem safety:
+
+- Refuse symlink destinations.
+- Refuse directory destinations.
+- Refuse other non-regular destinations where the container can create them.
+- Do not follow Docker daemon symlinks.
+- Do not restore Docker backup symlinks.
+- Reject unsafe path arguments: relative paths, /, // prefixes, whitespace,
+  shell metacharacters, quotes, backticks, and dollar signs.
+- Reinstall is idempotent.
+- Every test-created path is under container-local tmpfs or copied image state.
+- Tests should assert that staged root cleanup leaves no auto-cleanup temp
+  directories behind.
+
+Docker daemon JSON merge:
+
+- Missing daemon file creates exact policy.
+- Empty daemon file creates exact policy.
+- Existing unrelated daemon keys are preserved.
+- log-driver and log-opts are replaced by exact policy.
+- Existing file mode is preserved.
+- Existing owner/group is preserved in a focused root-in-container lane.
+- Backup is created only when content changes.
+- Backup content is exact original.
+- Backup mode/owner are preserved where possible.
+- Invalid JSON, non-object JSON, invalid UTF-8, symlink path, directory path,
+  bad policy fixture, missing log opts, wrong values, and extra opts fail.
+- Atomic rewrite leaves no temp clutter after failures that can be simulated.
+
+Docker cleanup script:
+
+- The test image should not include a real Docker CLI.
+- Missing Docker CLI exits 0 with skip message.
+- Unreachable Docker daemon exits 0 with skip message.
+- No path can emit volume prune, system prune, --volumes, or direct
+  /var/lib/docker deletion.
+- Builder prune supports --keep-storage.
+- Builder prune supports --reserved-space.
+- Buildx fallback supports --reserved-space.
+- No-storage-flag fallback prunes by age only.
+- No builder/buildx support skips build cache and continues other safe prunes.
+- Env overrides affect only the intended prune filters/storage reservation.
+- DOCKER is treated as executable name/path, not a shell command line.
+- Fake Docker commands must work with noexec /tmp; prefer checked-in fixtures
+  or shell-dispatched fixtures over generated executable files.
+- A failing prune command stops the script if set -e remains the intended
+  behavior; otherwise change the script and test the new behavior.
+
+Policy detection:
+
+- btmp fixture installs when no size-based policy exists.
+- btmp fixture skips only when the same active stanza includes /var/log/btmp
+  and maxsize 50M.
+- Commented btmp stanzas do not count.
+- /var/log/btmp-old does not count.
+- maxsize in another stanza does not count.
+- Combined path stanzas count if logrotate accepts them.
+- Newline-brace stanzas count if logrotate accepts them.
+- A monthly-only distro btmp stanza does not block installing the repo policy.
+- APT fixture installs when no active cleanup policy exists.
+- Positive AutocleanInterval and CleanInterval count.
+- "always" counts because apt.systemd.daily supports it.
+- "0", update-only periodic config, and commented config do not count.
+- check.sh --strict and install.sh use the same policy predicates.
+
+systemd and logrotate:
+
+- Rendered service has no unresolved placeholders.
+- systemd-analyze verify passes in each supported image.
+- Timer has OnCalendar=weekly, Persistent=true, RandomizedDelaySec=1h,
+  AccuracySec=1h.
+- Service has Type=oneshot, ConditionFileIsExecutable, EnvironmentFile,
+  Nice=10, IOSchedulingClass=idle, TimeoutStartSec=30min.
+- logrotate -d accepts the btmp fixture in every supported image.
+- create 0660 root utmp is valid in supported images.
+
+Uninstall contract:
+
+- Removes only repo-owned installed files.
+- Skip flags preserve optional policy files.
+- Leaves Docker daemon config untouched by default.
+- Backup restore is explicit only.
+- Backup restore requires absolute safe regular file path.
+- Restore destination refuses symlink and non-regular files.
+- Restore preserves backup metadata as documented.
+- Dry-run removes nothing.
+- Service actions are disabled under --root/custom --etc-dir/no-service-actions.
+
+Docs contract:
+
+- README verification examples use containerized entrypoints only.
+- Direct ./tests/*.sh examples should be removed or marked internal.
+- All referenced repo files exist.
+- Policy table matches fixtures.
+- Dangerous commands appear only in the "do not automate" context.
+- Docker/logrotate/journald/APT claims match fixture values and test helpers.
+
+Container posture:
+
+- Test runner includes no Docker socket mount.
+- Test runner uses no network at runtime.
+- Test runner uses read-only root filesystem.
+- Test runner runs from copied image context, not a default repo bind mount.
+- Test runner drops capabilities.
+- Test runner uses no-new-privileges.
+- Test runner uses non-root default user.
+- Test runner sets memory and PID limits.
+- Test runner sets tmpfs /tmp with noexec,nosuid,nodev.
+- Test scripts refuse execution without the container marker.
+- Any debug shell lane is clearly separate from default tests and at least as
+  constrained, except for interactivity.
+- The posture test should inspect the wrapper and also run an in-container
+  self-check that confirms marker env, uid, writable paths, network absence,
+  and absence of Docker socket.
+
+Failure diagnostics
+-------------------
+
+The suite should be strict without becoming opaque:
+
+- Every test file should print a short lane name before major sections.
+- Assertion helpers should include expected value, actual value, and path.
+- On failure, staged roots should remain inspectable inside the container only
+  when an explicit debug flag is set.
+- Default runs should clean all staged roots and temporary files.
+- The wrapper should print the exact matrix lane and local image tag.
+- The wrapper should not print secrets or inherited host environment.
+- The debug shell should use the same image and posture, with any deviations
+  printed clearly.
+
+Root-in-container lane
+----------------------
+
+Most tests should run as non-root. A small root-in-container lane is justified
+only for behavior that models sudo-installed metadata:
+
+- root-owned Docker daemon JSON preservation
+- backup owner/group preservation
+- root/utmp logrotate assumptions if necessary
+
+This lane must still have:
+
+- no network
+- no user-provided host path mounts
+- read-only rootfs
+- tmpfs /tmp
+- no Docker socket
+- no privileged mode
+- copied image context, not a bind-mounted checkout
+
+Start with uid 0 and cap_drop ALL. If the metadata tests prove CAP_CHOWN is
+required to exercise owner transitions, add only CAP_CHOWN to this lane and
+document exactly which assertion needs it. Do not give the broad suite root or
+extra capabilities.
+
+Be precise about what "root" means here. A real sudo install normally has
+capabilities such as CAP_CHOWN. A container running uid 0 with cap_drop ALL does
+not fully model that. The root lane should therefore start from cap_drop ALL as
+the safer baseline, then add only the minimal capabilities required by a
+specific metadata assertion. Expected candidates are CAP_CHOWN for owner/group
+preservation and possibly CAP_FOWNER if chmod/chown edge cases require it.
+Do not grant broad capability sets merely because the lane is called "root".
+
+Rejected approaches
+-------------------
+
+1. "Just run current tests in Docker."
+   Rejected because it does not prove host refusal, harness posture, docs
+   safety, noexec tmp compatibility, distro matrix behavior, or root-specific
+   metadata preservation.
+
+2. Compose as the default.
+   Rejected because there are no service dependencies. Compose would add config
+   surface without improving isolation.
+
+3. Read-write repo bind mount.
+   Rejected because it weakens the guarantee that tests cannot touch the host
+   checkout.
+
+4. Host-runnable tests with a documented preference for containers.
+   Rejected because "containerized tests only" is a hard rule.
+
+5. Runtime network access.
+   Rejected because tests do not need it. Package downloads belong to image
+   build, not test execution.
+
+6. Mounting the host Docker socket for "more realistic" Docker cleanup tests.
+   Rejected because the cleanup script can be tested with fake Docker command
+   fixtures. A host socket would turn tests into real host integration work and
+   would violate the core safety boundary.
+
+7. Floating base image tags such as stable, latest, or rolling testing.
+   Rejected because they make failures hard to attribute. Use named releases
+   plus digests; add new named releases deliberately.
+
+8. Running the broad suite as root.
+   Rejected because root masks permission mistakes. Use a narrow root lane only
+   for owner/group preservation behavior.
+
+Implementation sequence
+-----------------------
+
+Phase 1: harness and refusal
+
+Pledge item:
+
+- [ ] I pledge to implement Phase 1 in small slices: first the minimal image,
+      then the wrapper, then the guard, then README verification. I will not
+      split the whole test suite or add CI in this phase.
+
+Why first:
+
+No later safety claim matters while host-runnable tests remain the normal path.
+
+Outcome:
+
+The only supported test command is containerized, and existing tests run from a
+copied image context without runtime host access.
+
+- Add digest-pinned named-release container test image.
+- Add Makefile that delegates to scripts/test-container.sh.
+- Add test env marker.
+- Make existing test entrypoints refuse host execution.
+- Run existing tests from copied image context, no runtime bind mount.
+- Update README verification commands.
+
+Phase 1 is a transition point, not the final state. It may prove that the
+existing suite can run inside the intended container boundary, but it does not
+complete the strategy until noexec tmp, posture self-checks, docs contracts,
+and focused contract splits are in place.
+
+Done means:
+
+- [ ] `make test` runs the existing suite inside the container.
+- [ ] Direct test entrypoints fail on the host with the container-only message.
+- [ ] The default runtime has no network, no Docker socket, no repo bind mount,
+      read-only rootfs, and non-root uid.
+- [ ] README verification points to `make test`.
+
+Phase 2: containment hardening
+
+Pledge item:
+
+- [ ] I pledge to harden one containment dimension at a time and prove each one
+      before moving on. I will not weaken `/tmp`, add Docker socket access, or
+      introduce runtime network to make tests easier.
+
+Why now:
+
+Phase 1 can still be a wrapper around old assumptions. Phase 2 turns the
+wrapper into a verified containment boundary.
+
+Outcome:
+
+The harness proves its own posture, fake Docker works under noexec tmpfs, and
+ignored host-only state stays out of the image.
+
+- Refactor fake Docker tests so generated executable files are not needed in
+  /tmp.
+- Make /tmp noexec.
+- Add posture test for runner flags and Dockerfile base pinning.
+- Add .dockerignore contract test.
+- Add an in-container self-check for uid, writable paths, network absence, and
+  missing Docker socket.
+
+Done means:
+
+- [ ] `/tmp` is noexec in the default runtime.
+- [ ] Fake Docker tests still pass without executable temp files.
+- [ ] A posture test fails if critical runner flags are removed.
+- [ ] An in-container self-check proves uid, network, writable paths, and
+      Docker socket absence.
+- [ ] A build-context canary proves ignored files do not enter the image.
+
+Phase 3: split contracts
+
+Pledge item:
+
+- [ ] I pledge to split tests only at real contract boundaries. I will not split
+      files merely to make line counts look better.
+
+Why now:
+
+After the harness is safe, the suite can become easier to reason about without
+creating host-risk churn.
+
+Outcome:
+
+Each major repo contract has an owning test file and clear failure messages.
+
+- Split tests/run.sh into focused contract files.
+- Keep tests/run-all.sh as the in-container orchestrator.
+- Add docs contract tests.
+- Add exact file-set assertions for install/uninstall.
+
+Done means:
+
+- [ ] Installer, uninstaller, Docker JSON, Docker cleanup, policy detection,
+      docs, and posture checks each have an obvious owning test.
+- [ ] `tests/run-all.sh` is the only broad in-container orchestrator.
+- [ ] Exact staged file-set assertions exist for install and uninstall.
+- [ ] Failure output points to the violated contract.
+
+Phase 4: distro and root lanes
+
+Pledge item:
+
+- [ ] I pledge to add one lane at a time and justify the distinct behavior it
+      proves. I will not let matrix or root work become a substitute for the
+      broad non-root containment lane.
+
+Why now:
+
+Only after the core contracts are readable is it worth broadening the
+environment matrix and modeling sudo-installed metadata.
+
+Outcome:
+
+Debian and Ubuntu behavior are both checked, and root-only metadata behavior is
+tested narrowly without weakening the broad suite.
+
+- Add Debian/Ubuntu matrix.
+- Add narrow root-in-container metadata lane.
+- Keep local default fast; make CI broader.
+
+Done means:
+
+- [ ] Debian 12 default lane passes.
+- [ ] Ubuntu 24.04 matrix lane passes.
+- [ ] Root metadata lane is separate, narrow, and still has no network, no
+      Docker socket, and no user-provided host path mounts.
+- [ ] Any extra root-lane capability is tied to a named assertion.
+
+Phase 5: optional CI
+
+Pledge item:
+
+- [ ] I pledge to add CI only after local container lanes are honest. CI must
+      call the same supported entrypoints and must not introduce a parallel host
+      test path.
+
+Why last:
+
+CI should amplify the local contract, not define a second one.
+
+Outcome:
+
+Automation runs the same containerized tests with least privilege.
+
+- If this repo will use GitHub Actions, add a workflow that runs only make test
+  or make test/matrix.
+- Do not add host shell tests to CI.
+- Use least-privilege workflow permissions, checkout with persisted credentials
+  disabled, and pinned actions if workflows are added.
+- CI should not mount the Docker socket into the test container. The runner may
+  use Docker to build/run the test image, but the test container must not see
+  that socket.
+
+Done means:
+
+- [ ] Workflow calls `make test` or `make test/matrix`.
+- [ ] Workflow does not call direct host test scripts.
+- [ ] Workflow permissions are least privilege.
+- [ ] Checkout does not persist credentials.
+- [ ] Test container still cannot see the host Docker socket.
+
+Priority tiers
+--------------
+
+Tier 0 is the minimum acceptable change for "containerized tests only":
+
+- host test entrypoints refuse execution
+- make test runs tests inside a copied-context container image
+- no runtime network
+- no Docker socket
+- no repo bind mount in default test lane
+- broad lane is non-root
+- README verification points to make test
+
+Tier 1 is the minimum acceptable safety harness:
+
+- noexec tmpfs after fake Docker refactor
+- posture self-check inside the container
+- wrapper posture tests
+- .dockerignore/build-context tests
+- docs contract checks
+- exact staged install/uninstall file-set checks
+
+Tier 2 is completeness:
+
+- split monolithic tests by contract
+- Debian/Ubuntu matrix
+- narrow root metadata lane
+- CI workflow, if wanted
+- optional security/staleness reporting for pinned bases
+
+Do not present Tier 0 as complete. It is only the first gate that makes further
+test work safe to run.
+
+Meticulous checklist
+--------------------
+
+Use this as the implementation checklist. Do not mark an item done merely
+because an approximate version exists; each item should be backed by a test,
+posture check, or direct inspection.
+
+Planning and boundary decisions:
+
+- [ ] Confirm Docker is the supported default container engine.
+- [ ] Decide whether Podman support is in scope for the first implementation.
+- [ ] Confirm default local matrix is Debian 12/bookworm only.
+- [ ] Confirm CI matrix is Debian 12/bookworm plus Ubuntu 24.04/noble.
+- [ ] Confirm runtime network is always disabled for test execution.
+- [ ] Confirm image build network is allowed for apt package installation.
+- [ ] Confirm default runtime uses copied image context, not a repo bind mount.
+- [ ] Confirm debug shell, if kept, is clearly separate from verification.
+- [ ] Confirm broad suite runs as non-root.
+- [ ] Confirm root-in-container lane is metadata-only.
+
+Container image:
+
+- [ ] Add containers/test/Containerfile.
+- [ ] Use ARG BASE_IMAGE with a named-release digest-pinned default.
+- [ ] Reject or avoid floating tags such as stable, latest, or testing.
+- [ ] Install only required test tools.
+- [ ] Include dash.
+- [ ] Include python3.
+- [ ] Include logrotate.
+- [ ] Include systemd-analyze through the smallest practical package set.
+- [ ] Include POSIX/core shell utilities required by scripts and tests.
+- [ ] Do not install Docker CLI in the test image.
+- [ ] Set PYTHONDONTWRITEBYTECODE=1.
+- [ ] COPY the repository into /work from the Docker build context.
+- [ ] Do not execute repository test or install scripts during image build.
+- [ ] Do not create a writable application directory in the image unnecessarily.
+- [ ] Set WORKDIR /work.
+- [ ] Avoid ENTRYPOINT magic; keep the command explicit from the wrapper.
+
+.dockerignore and build context:
+
+- [ ] Add .dockerignore if missing.
+- [ ] Exclude .git.
+- [ ] Exclude .agents.
+- [ ] Exclude .codex.
+- [ ] Exclude Python bytecode and __pycache__.
+- [ ] Exclude backup/temp files.
+- [ ] Exclude editor/OS clutter if present.
+- [ ] Add a test that .dockerignore contains required exclusions.
+- [ ] Add a test that ignored private/local state is absent from the image.
+- [ ] Add a build-context canary test: create ignored canary files in a
+      temporary copied checkout before image build, build from that copy, and
+      assert the canaries are absent inside the image.
+- [ ] Run the build-context canary test with cache disabled or a unique canary
+      value so a cached layer cannot hide a failure.
+
+Host wrapper:
+
+- [ ] Add scripts/test-container.sh.
+- [ ] Keep the wrapper small enough to audit.
+- [ ] Add usage text.
+- [ ] Support test, test/matrix, test/root-container, test/posture, and shell
+      modes only if implemented.
+- [ ] Refuse unknown modes.
+- [ ] Refuse host uid 0 by default.
+- [ ] Allow root only through an explicit, narrowly named override if needed.
+- [ ] Use DOCKER_CLI defaulting to docker.
+- [ ] Do not claim Podman support unless tested.
+- [ ] Maintain an allowlist of matrix base images.
+- [ ] Require every matrix base image to include @sha256:.
+- [ ] Reject matrix names and image tags containing whitespace or shell
+      metacharacters.
+- [ ] Avoid eval.
+- [ ] Use arrays or carefully quoted arguments for docker invocations.
+- [ ] Build images with explicit local tags.
+- [ ] Use docker run --rm.
+- [ ] Use docker run --init.
+- [ ] Use docker run --pull=never for test execution.
+- [ ] Pass only explicit environment variables.
+- [ ] Set AUTO_CLEANUP_TEST_CONTAINER=1.
+- [ ] Set HOME to a tmpfs-backed path.
+- [ ] Set PYTHONDONTWRITEBYTECODE=1.
+- [ ] Do not pass host HOME.
+- [ ] Do not pass SSH_AUTH_SOCK.
+- [ ] Do not pass cloud credential env vars.
+- [ ] Do not pass Docker config or registry credentials.
+- [ ] Do not use host --env-file.
+- [ ] Do not mount /var/run/docker.sock.
+- [ ] Do not mount the repository in the default test lane.
+- [ ] Print the selected matrix lane and image tag.
+- [ ] Do not prune images, builder cache, containers, or volumes automatically.
+
+Default runtime containment:
+
+- [ ] Run as non-root numeric user, preferably 65532:65532.
+- [ ] Use --network none.
+- [ ] Use --read-only.
+- [ ] Use --cap-drop ALL.
+- [ ] Use --security-opt no-new-privileges:true.
+- [ ] Use --pids-limit.
+- [ ] Use --memory.
+- [ ] Use --memory-swap.
+- [ ] Consider --cpus only if supported consistently by the chosen engine and CI.
+- [ ] Mount /tmp as tmpfs.
+- [ ] Mount /tmp with nosuid.
+- [ ] Mount /tmp with nodev.
+- [ ] Mount /tmp with noexec after fake Docker tests are refactored.
+- [ ] Provide no user-supplied host path mounts.
+- [ ] Provide no Docker socket.
+- [ ] Provide no privileged mode.
+
+Test entrypoint guard:
+
+- [ ] Add tests/lib/require-container.sh or equivalent.
+- [ ] Source the guard from every directly executable test entrypoint.
+- [ ] Fail with a short message when AUTO_CLEANUP_TEST_CONTAINER is missing.
+- [ ] Make the message point to make test.
+- [ ] Add a posture test that verifies the guard exists in all entrypoints.
+- [ ] Add a host-side smoke check, outside the guarded tests, that direct
+      ./tests/run-all.sh fails with the container-only message if such a check
+      can run safely without executing the suite.
+
+Test structure:
+
+- [ ] Add tests/run-all.sh as the in-container orchestrator.
+- [ ] Split syntax checks into tests/00_syntax.sh.
+- [ ] Split manifest/source checks into tests/01_manifest.sh.
+- [ ] Split harness checks into tests/02_container_posture.sh.
+- [ ] Split installer behavior into tests/10_install_contract.sh.
+- [ ] Split uninstall behavior into tests/11_uninstall_contract.sh.
+- [ ] Split Docker daemon JSON merge tests into tests/20_docker_daemon_json.sh.
+- [ ] Split Docker cleanup script tests into tests/21_docker_cleanup_script.sh.
+- [ ] Split btmp/APT/journald/systemd policy tests into tests/30_policy_detection.sh.
+- [ ] Add docs checks in tests/40_docs_contract.sh.
+- [ ] Add matrix smoke checks in tests/50_compat_smoke.sh if useful.
+- [ ] Keep shared assertions in tests/lib/assert.sh.
+- [ ] Keep staged-root helpers in tests/lib/staged-root.sh.
+- [ ] Assertion failures include path, expected value, and actual value.
+- [ ] Test files print concise section/lane names.
+- [ ] Default runs clean staged roots.
+- [ ] A debug flag can preserve staged roots inside the container for diagnosis.
+- [ ] Do not split only for aesthetics; split by contract boundary.
+
+Fake Docker cleanup tests:
+
+- [ ] Remove generated executable fake Docker files from /tmp.
+- [ ] Add checked-in fake Docker fixture or shell-dispatched fake command.
+- [ ] Ensure fake Docker works when /tmp is noexec.
+- [ ] Test missing Docker CLI skip path.
+- [ ] Test unreachable Docker daemon skip path.
+- [ ] Test builder prune --keep-storage path.
+- [ ] Test builder prune --reserved-space path.
+- [ ] Test buildx --reserved-space fallback path.
+- [ ] Test no-storage-flag fallback path.
+- [ ] Test missing builder/buildx path.
+- [ ] Test env overrides for all retention settings.
+- [ ] Test that volume prune, system prune, --volumes, and /var/lib/docker
+      deletion never appear.
+- [ ] Test failure semantics for prune command failure.
+
+Installer contract tests:
+
+- [ ] Default staged install creates exactly expected files.
+- [ ] Default staged install creates no files outside staged root.
+- [ ] Staged install is idempotent.
+- [ ] Custom --root works.
+- [ ] Custom --prefix works.
+- [ ] Custom --etc-dir works.
+- [ ] Trailing slash normalization works.
+- [ ] --root disables systemd actions.
+- [ ] custom --etc-dir disables systemd actions.
+- [ ] --no-service-actions suppresses all systemctl actions.
+- [ ] --no-enable-timer avoids enabling/starting timer.
+- [ ] --restart-docker is required before Docker restart appears.
+- [ ] Dry-run writes nothing.
+- [ ] Dry-run output remains high-level and operator-facing.
+- [ ] Missing common helper fails before writes.
+- [ ] Missing fixture fails before writes.
+- [ ] Missing Docker merge helper fails before writes.
+- [ ] Invalid existing Docker daemon JSON fails before unrelated writes.
+- [ ] --skip-docker-config avoids Python requirement and daemon writes.
+- [ ] Component skip flags install only requested components.
+
+Filesystem safety tests:
+
+- [ ] Refuse symlink executable destination.
+- [ ] Refuse directory executable destination.
+- [ ] Refuse symlink systemd destination.
+- [ ] Refuse directory systemd destination.
+- [ ] Refuse symlink Docker daemon path.
+- [ ] Refuse directory Docker daemon path.
+- [ ] Refuse non-regular files where the lane can create them.
+- [ ] Reject relative --root.
+- [ ] Reject --root /.
+- [ ] Reject // path prefix.
+- [ ] Reject whitespace in path args.
+- [ ] Reject &, |, backslash, %, #, ; in path args.
+- [ ] Reject dollar signs, quotes, apostrophes, and backticks in path args.
+- [ ] Verify test-created temp roots are removed.
+
+Docker daemon JSON tests:
+
+- [ ] Missing daemon JSON creates exact policy.
+- [ ] Empty daemon JSON creates exact policy.
+- [ ] Existing unrelated keys are preserved.
+- [ ] Existing log-driver is replaced.
+- [ ] Existing log-opts are replaced exactly.
+- [ ] Existing file mode is preserved.
+- [ ] Existing owner/group is preserved in root lane.
+- [ ] Backup is created only when content changes.
+- [ ] Backup content is exact original.
+- [ ] Backup mode is preserved.
+- [ ] Backup owner/group is preserved where tested.
+- [ ] Invalid JSON fails.
+- [ ] Non-object JSON fails.
+- [ ] Invalid UTF-8 fails.
+- [ ] Missing policy file fails.
+- [ ] Non-object policy JSON fails.
+- [ ] Missing policy log-driver fails.
+- [ ] Wrong policy log-driver fails.
+- [ ] Missing policy log-opts fails.
+- [ ] Wrong policy log option value fails.
+- [ ] Extra policy log option fails.
+- [ ] Non-string policy log option fails.
+- [ ] No temp files remain after simulated failure where feasible.
+
+Policy detection tests:
+
+- [ ] btmp fixture installs when no size-based btmp policy exists.
+- [ ] btmp fixture skips when existing btmp stanza has maxsize 50M.
+- [ ] Commented btmp stanza does not count.
+- [ ] /var/log/btmp-old does not count.
+- [ ] maxsize in another stanza does not count.
+- [ ] Combined path btmp stanza counts if logrotate accepts it.
+- [ ] Newline-brace btmp stanza counts if logrotate accepts it.
+- [ ] Monthly-only btmp stanza does not block repo fixture.
+- [ ] APT fixture installs when no cleanup policy exists.
+- [ ] Positive AutocleanInterval counts.
+- [ ] Positive CleanInterval counts.
+- [ ] APT "always" counts.
+- [ ] APT "0" does not count.
+- [ ] Update-Package-Lists only does not count.
+- [ ] Commented APT cleanup config does not count.
+- [ ] install.sh and check.sh share the same predicates.
+
+systemd/logrotate tests:
+
+- [ ] Rendered service has no placeholders.
+- [ ] systemd-analyze verify passes in Debian 12 image.
+- [ ] systemd-analyze verify passes in Ubuntu 24.04 image.
+- [ ] Timer policy keys match exactly.
+- [ ] Service policy keys match exactly.
+- [ ] EnvironmentFile tracks custom --etc-dir.
+- [ ] ExecStart tracks custom --prefix.
+- [ ] ConditionFileIsExecutable tracks custom --prefix.
+- [ ] logrotate -d accepts btmp fixture in Debian 12 image.
+- [ ] logrotate -d accepts btmp fixture in Ubuntu 24.04 image.
+- [ ] root utmp create directive is valid in supported images.
+
+Uninstall tests:
+
+- [ ] Removes repo-owned executable.
+- [ ] Removes repo-owned systemd units.
+- [ ] Removes repo-owned journald fixture unless skipped.
+- [ ] Removes repo-owned btmp fixture unless skipped.
+- [ ] Removes repo-owned APT fixture unless skipped.
+- [ ] Leaves Docker daemon JSON untouched by default.
+- [ ] Refuses missing backup restore path.
+- [ ] Refuses relative backup restore path.
+- [ ] Refuses unsafe backup restore path.
+- [ ] Refuses symlink backup file.
+- [ ] Refuses symlink restore destination.
+- [ ] Refuses directory restore destination.
+- [ ] Restores backup content exactly.
+- [ ] Preserves backup mode on restore.
+- [ ] Dry-run removes nothing.
+- [ ] --root disables service actions.
+- [ ] --no-service-actions suppresses service actions.
+
+Docs contract tests:
+
+- [ ] README verification section points to make test, not direct test scripts.
+- [ ] Direct test scripts are documented as internal/container-only if mentioned.
+- [ ] README policy table matches Docker log fixture.
+- [ ] README policy table matches btmp fixture.
+- [ ] README policy table matches APT fixture.
+- [ ] README policy table matches journald fixture.
+- [ ] Dangerous Docker volume/system prune commands appear only in warnings.
+- [ ] All referenced repo paths exist.
+- [ ] All command snippets that are auto-tested use staged/container-safe modes.
+- [ ] VPS-only sudo snippets are clearly not part of automated tests.
+
+Posture tests:
+
+- [ ] Wrapper contains --network none for test mode.
+- [ ] Wrapper contains --read-only.
+- [ ] Wrapper contains --cap-drop ALL.
+- [ ] Wrapper contains no-new-privileges.
+- [ ] Wrapper contains --pull=never for runtime.
+- [ ] Wrapper contains no /var/run/docker.sock mount.
+- [ ] Wrapper does not mount repo in default test mode.
+- [ ] Wrapper sets AUTO_CLEANUP_TEST_CONTAINER.
+- [ ] Wrapper sets resource limits.
+- [ ] Wrapper sets explicit tmpfs /tmp.
+- [ ] Container self-check confirms non-root uid.
+- [ ] Container self-check confirms no default network route.
+- [ ] Container self-check confirms /work is not writable in broad lane, or
+      that writes to copied image state fail under read-only rootfs.
+- [ ] Container self-check confirms /tmp is writable.
+- [ ] Container self-check confirms /tmp is noexec after hardening.
+- [ ] Container self-check confirms Docker socket is absent.
+
+Matrix and root lanes:
+
+- [ ] Debian 12 default lane passes.
+- [ ] Ubuntu 24.04 matrix lane passes.
+- [ ] Matrix wrapper refuses unknown lane names.
+- [ ] Matrix wrapper refuses image refs without @sha256:.
+- [ ] Root metadata lane is separate from broad test.
+- [ ] Root metadata lane has no network.
+- [ ] Root metadata lane has no Docker socket.
+- [ ] Root metadata lane has no user-provided host path mounts.
+- [ ] Root metadata lane starts with cap_drop ALL.
+- [ ] Any added capability is documented with the exact test requiring it.
+
+CI, if added:
+
+- [ ] Workflow runs make test or make test/matrix only.
+- [ ] Workflow does not run direct host test scripts.
+- [ ] Workflow permissions are least-privilege.
+- [ ] Checkout persists no credentials.
+- [ ] Actions are pinned, preferably by full commit SHA.
+- [ ] CI does not mount Docker socket into the test container.
+- [ ] CI documents which matrix lanes are required vs optional.
+
+Open questions to decide during implementation
+----------------------------------------------
+
+1. Whether to support podman officially.
+   Use DOCKER_CLI?=docker and keep commands close to OCI-compatible flags, but
+   treat Docker as the supported default until podman is tested.
+
+2. Whether to keep a debug shell.
+   Useful, but it must not become a backdoor host test lane. It should run in
+   the same image and containment profile, with a read-only repo view if mounted.
+
+3. Whether CI should run all distro images on every push.
+   Full matrix is better safety; Debian 12 only is faster. A pragmatic split is
+   Debian 12 locally, Debian 12 plus Ubuntu 24.04 in CI.
+
+4. Whether to adopt snapshot package repositories.
+   Start without snapshots so distro tool drift remains visible. Move to
+   snapshots only if CI reproducibility becomes more important than drift
+   detection.
+
+Definition of done
+------------------
+
+The test system is done when:
+
+- Running ./tests/run.sh on the host fails with the container-only message.
+- make test builds a pinned test image and runs all tests with no runtime
+  network, no user-provided host path mounts, no Docker socket, read-only
+  rootfs, and non-root user.
+- The broad suite writes only to container-local tmpfs.
+- A posture test fails if the runner loses the critical containment flags.
+- README verification points only to containerized test commands.
+- The suite proves installer, uninstaller, policy detection, Docker JSON merge,
+  Docker cleanup safety, docs, and harness posture as explicit contracts.
+
+References consulted
+--------------------
+
+- Dockerfile best practices:
+  https://docs.docker.com/develop/develop-images/dockerfile_best-practices/
+- Docker run reference:
+  https://docs.docker.com/reference/cli/docker/container/run/
+- Docker build context and .dockerignore behavior:
+  https://docs.docker.com/build/building/context/

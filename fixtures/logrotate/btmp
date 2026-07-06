@@ -1,0 +1,8 @@
+/var/log/btmp {
+    monthly
+    missingok
+    notifempty
+    maxsize 50M
+    rotate 1
+    create 0660 root utmp
+}
