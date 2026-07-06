@@ -1,8 +1,11 @@
 # auto-cleanup
 
-Small VPS disk cleanup policy, packaged as installable fixtures and scripts.
+Conservative VPS disk cleanup policy, packaged as installable fixtures and
+scripts.
 
-The installer writes only the files needed for:
+Use this repo when you want predictable limits for common disk-growth sources
+without installing broad cleanup jobs that might remove data you still care
+about. The installer writes only the files needed for:
 
 - Docker log caps through `/etc/docker/daemon.json`
 - Weekly safe Docker pruning through a systemd timer
@@ -10,11 +13,12 @@ The installer writes only the files needed for:
 - size-based `/var/log/btmp` rotation
 - APT periodic cleanup
 
-It does not automate Docker volume pruning.
-It also does not install temp-directory cleanup; use the distro's existing
-`systemd-tmpfiles-clean.timer` for that.
+It does not automate Docker volume pruning or temp-directory cleanup. Docker
+volumes can hold application data, so they are left for an operator to prune
+manually. Temporary directories are already handled by the distro's
+`systemd-tmpfiles-clean.timer` on systemd hosts.
 
-Default policy:
+Default installed policy:
 
 | Area | Default |
 | --- | --- |
@@ -35,14 +39,18 @@ This repo intentionally does not install jobs that run:
 
 ## Install
 
-Review the plan first:
+The normal workflow is: review the planned writes, stage them under a
+temporary root if you want to inspect the file tree, then install on the host.
+
+Review the plan first. Dry-run does not install files, but it still validates
+Docker daemon JSON when Docker config management is enabled:
 
 ```sh
 ./scripts/install.sh --dry-run
 ```
 
-Dry-run does not install files, but it still validates Docker daemon JSON when
-Docker config management is enabled.
+For a file-tree preview that does not touch the host, use the staged install
+flow below.
 
 Install on a VPS:
 
@@ -50,10 +58,11 @@ Install on a VPS:
 sudo ./scripts/install.sh
 ```
 
-You can run `--dry-run`, `--root`, and `./tests/run.sh` without sudo. Use sudo
-only for a real install or uninstall against `/etc`, `/usr/local`, and systemd.
+You can run `--dry-run` and `--root` without sudo. Repository tests are
+container-only; use `make test`. Use sudo only for a real install or uninstall
+against `/etc`, `/usr/local`, and systemd.
 
-The default install writes to normal Linux locations:
+By default, a real install writes to these Linux locations:
 
 - `/usr/local/sbin/vps-docker-clean`
 - `/etc/systemd/system/vps-docker-clean.{service,timer}`
@@ -66,7 +75,7 @@ The default install writes to normal Linux locations:
 
 When service actions are enabled, the installer runs `systemctl daemon-reload`,
 enables `vps-docker-clean.timer`, and restarts `systemd-journald` if the
-journald fixture was installed. Docker is restarted only with
+journald fixture was installed. Docker is restarted only when you pass
 `--restart-docker`.
 
 The Docker daemon config is merged as JSON and backed up before modification.
@@ -81,7 +90,7 @@ installer refuses to replace it; merge that case manually.
 For files owned by this repo, the installer also refuses to replace symlink or
 non-regular destinations. Move or resolve those manually before installing.
 
-Useful install switches:
+Common install switches:
 
 - `--root DIR` stages under another root for tests or image builds.
 - `--prefix DIR` changes where the cleanup executable is installed.
@@ -96,13 +105,13 @@ Useful install switches:
 
 Use `--no-service-actions` when staging inside images, containers, rescue
 environments, or any host where `systemctl` is present but systemd is not
-usable as the service manager.
+usable as the service manager. Service actions are skipped automatically with
+`--root` or a custom `--etc-dir`, because systemd only discovers units from its
+configured system directories.
 
 Custom `--root`, `--prefix`, and `--etc-dir` values must be absolute paths
 other than `/`, must not start with `//`, and must not contain whitespace, `&`,
 `|`, backslashes, `%`, `#`, `;`, `$`, quotes, or backticks.
-Service actions are skipped automatically with `--root` or a custom `--etc-dir`,
-because systemd only discovers units from its configured system directories.
 
 Script dependencies are intentionally small: POSIX `/bin/sh` and standard tools
 such as `install`, `sed`, `grep`, and `awk`. Run scripts from a complete
@@ -122,14 +131,16 @@ docker compose up -d --force-recreate
 
 ## Staged Install
 
-Use `--root` to test exactly what would be installed without touching the host:
+Use `--root` when you want to inspect the install tree or validate an image
+build without changing the running host:
 
 ```sh
 ./scripts/install.sh --root /tmp/auto-cleanup-root
 find /tmp/auto-cleanup-root -type f -print
 ```
 
-With `--root`, service actions are skipped automatically.
+With `--root`, service actions are skipped automatically, and generated paths
+are placed under the staged root while preserving their normal absolute layout.
 
 ## Uninstall
 
@@ -260,15 +271,47 @@ Primary references:
 
 ## Verification
 
+There are two different checks:
+
+- Repository tests prove that the scripts, fixtures, docs contracts, and
+  install behavior still match this repo.
+- Installed policy checks inspect a real or staged filesystem and report
+  whether the expected files and policy values are present.
+
+For repository tests, run:
+
 ```sh
-./tests/run.sh
-./tests/check-manifest.sh
-./scripts/check.sh
+make test
 ```
 
-Use strict checking after install, for staged roots, or in CI:
+Repository tests are intentionally containerized. `make test` builds the pinned
+Debian test image from the copied repository context, then runs the broad
+in-container suite as a non-root user with no network, no Docker socket, a
+read-only root filesystem, dropped capabilities, and `/tmp` mounted noexec.
+
+The test entrypoints refuse direct host execution. Run them through Make so the
+container wrapper can set the in-container guard:
 
 ```sh
+make test              # default Debian broad lane
+make test/matrix       # Debian and Ubuntu broad lanes
+make test/posture      # build-context and container-hardening canaries
+make test/root-container  # narrow root metadata lane
+```
+
+The broad lane checks shell/Python syntax, install manifest integrity, README
+policy contracts, container posture, install/check/uninstall behavior, default
+installed file sets, and Docker cleanup behavior through a fake Docker fixture.
+The root lane is separate because only metadata preservation needs uid 0; it
+runs with all capabilities dropped except `CHOWN` and `FOWNER`, and still has no
+network or Docker socket.
+
+For installed policy checks, run `check.sh`. Without `--strict`, it prints what
+it finds. With `--strict`, missing or invalid expected policy becomes a failing
+exit status:
+
+```sh
+./scripts/check.sh
 ./scripts/check.sh --strict
 ./scripts/check.sh --root /tmp/auto-cleanup-root --strict
 ```

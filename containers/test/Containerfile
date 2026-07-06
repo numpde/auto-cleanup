@@ -1,0 +1,28 @@
+# syntax=docker/dockerfile:1.7
+
+ARG BASE_IMAGE=docker.io/library/debian:12-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df
+FROM ${BASE_IMAGE}
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        bash \
+        coreutils \
+        dash \
+        findutils \
+        gawk \
+        grep \
+        logrotate \
+        python3 \
+        sed \
+        systemd \
+        util-linux \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /work
+COPY . /work
+
+CMD ["/bin/sh"]

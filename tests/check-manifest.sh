@@ -3,6 +3,7 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+. "$SCRIPT_DIR/lib/require-container.sh"
 MANIFEST="$REPO_DIR/fixtures/install-manifest.tsv"
 
 if [ ! -f "$REPO_DIR/scripts/lib/common.sh" ]; then

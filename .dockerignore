@@ -1,0 +1,15 @@
+.git
+.agents
+.codex
+.idea
+.vscode
+.venv
+__pycache__/
+*.py[cod]
+.pytest_cache/
+tmp/
+*.bak
+*.tmp
+*~
+.#*
+

@@ -458,7 +458,7 @@ verify the runner actually sets the intended container flags.
 Test layout
 -----------
 
-The current tests/run.sh is valuable but too monolithic for the target
+The current broad functionality test is valuable but too monolithic for the target
 contract. Split by responsibility:
 
     Makefile
@@ -817,7 +817,7 @@ Outcome:
 
 Each major repo contract has an owning test file and clear failure messages.
 
-- Split tests/run.sh into focused contract files.
+- Split the broad functionality test into focused contract files.
 - Keep tests/run-all.sh as the in-container orchestrator.
 - Add docs contract tests.
 - Add exact file-set assertions for install/uninstall.
@@ -1281,12 +1281,65 @@ Open questions to decide during implementation
    snapshots only if CI reproducibility becomes more important than drift
    detection.
 
+Implementation record
+---------------------
+
+Implemented on 2026-07-06:
+
+- Docker is the supported default engine. `DOCKER_CLI` remains overridable, but
+  Podman support is not claimed.
+- `make test` is the default local verification lane and delegates to
+  `scripts/test-container.sh`.
+- `make test/posture` runs the build-context canary.
+- `make test/matrix` runs Debian 12/bookworm slim and Ubuntu 24.04/noble.
+- `make test/root-container` runs the narrow root metadata lane.
+- The default test image is copied-context only. The default runtime has no
+  repository bind mount, no Docker socket, no runtime network, read-only rootfs,
+  dropped capabilities, no-new-privileges, non-root UID 65532, PID/memory
+  limits, `/tmp` mounted noexec, and a separate exec tmpfs at
+  `/run/auto-cleanup-test` for staged install roots whose executable metadata
+  must be testable.
+- `tests/30_functionality.sh`, `tests/check-manifest.sh`, and all new test
+  entrypoints source `tests/lib/require-container.sh` and refuse direct host
+  execution.
+- The test image includes Bash only so the containerized syntax lane can check
+  the host wrapper with `bash -n`; repository runtime/install scripts remain
+  POSIX `/bin/sh` checked with both `/bin/sh -n` and `dash -n`.
+- `tests/fixtures/fake-docker.sh` replaced generated executable fake Docker
+  scripts under `/tmp`, allowing `/tmp` to be noexec.
+- `tests/run-all.sh` is the broad in-container orchestrator. Separate contract
+  owners now exist for syntax, manifest, container posture, docs, and root
+  metadata. `tests/30_functionality.sh` is the broad containerized functionality suite for
+  installer, checker, uninstaller, policy, path-validation, drift-detection,
+  and Docker-cleanup behavior. It remains intentionally grouped until smaller
+  contract owners can be split out without losing failure coverage.
+- The root metadata lane starts with `--cap-drop ALL` and adds only `CHOWN` and
+  `FOWNER`, because the merge helper must preserve owner/group and set metadata
+  on the replacement daemon file. It still has no network, no Docker socket, no
+  host path mounts, read-only rootfs, and container-local tmpfs only.
+- `.dockerignore` excludes host-only and generated state, and the build-context
+  canary proves ignored `.git`, `.agents`, `.codex`, cache, and temp canaries do
+  not enter the image.
+- README verification points to `make test`, not direct test scripts.
+- GitHub Actions CI was added at `.github/workflows/container-tests.yml`. It
+  uses least-privilege permissions, disables persisted checkout credentials,
+  pins `actions/checkout` by full SHA, and calls only `make test/posture`,
+  `make test/matrix`, and `make test/root-container`.
+
+Validation completed:
+
+- `make test`
+- `make test/posture`
+- `make test/matrix`
+- `make test/root-container`
+
 Definition of done
 ------------------
 
 The test system is done when:
 
-- Running ./tests/run.sh on the host fails with the container-only message.
+- Running ./tests/30_functionality.sh on the host fails with the container-only
+  message.
 - make test builds a pinned test image and runs all tests with no runtime
   network, no user-provided host path mounts, no Docker socket, read-only
   rootfs, and non-root user.

@@ -3,6 +3,7 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+. "$SCRIPT_DIR/lib/require-container.sh"
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/auto-cleanup-test.XXXXXX")
 MERGE_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/auto-cleanup-merge.XXXXXX")
 FAKE_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/auto-cleanup-fake-docker.XXXXXX")
@@ -44,7 +45,7 @@ for script in install check uninstall; do
         check) partial_args=--strict ;;
         *) partial_args=--dry-run ;;
     esac
-    if "$PARTIAL_REPO/scripts/$script.sh" "$partial_args" >/dev/null 2>"$MERGE_ROOT/partial-repo.err"; then
+    if /bin/sh "$PARTIAL_REPO/scripts/$script.sh" "$partial_args" >/dev/null 2>"$MERGE_ROOT/partial-repo.err"; then
         echo "partial checkout $script unexpectedly succeeded" >&2
         exit 1
     fi
@@ -52,7 +53,7 @@ for script in install check uninstall; do
 done
 mkdir -p "$PARTIAL_REPO/scripts/lib"
 cp "$REPO_DIR/scripts/lib/common.sh" "$PARTIAL_REPO/scripts/lib/common.sh"
-if "$PARTIAL_REPO/scripts/install.sh" --dry-run --skip-docker-config >/dev/null 2>"$MERGE_ROOT/partial-repo.err"; then
+if /bin/sh "$PARTIAL_REPO/scripts/install.sh" --dry-run --skip-docker-config >/dev/null 2>"$MERGE_ROOT/partial-repo.err"; then
     echo "partial checkout install with missing fixtures unexpectedly succeeded" >&2
     exit 1
 fi
@@ -61,7 +62,7 @@ mkdir -p "$PARTIAL_REPO/fixtures"
 for fixture_dir in bin systemd journald logrotate apt docker; do
     cp -R "$REPO_DIR/fixtures/$fixture_dir" "$PARTIAL_REPO/fixtures/$fixture_dir"
 done
-if "$PARTIAL_REPO/scripts/install.sh" --dry-run >/dev/null 2>"$MERGE_ROOT/partial-repo.err"; then
+if /bin/sh "$PARTIAL_REPO/scripts/install.sh" --dry-run >/dev/null 2>"$MERGE_ROOT/partial-repo.err"; then
     echo "partial checkout install with missing Docker helper unexpectedly succeeded" >&2
     exit 1
 fi
@@ -71,6 +72,21 @@ grep -q 'missing source file:' "$MERGE_ROOT/partial-repo.err"
 "$REPO_DIR/scripts/install.sh" --root "$ROOT" >/dev/null
 "$REPO_DIR/tests/check-manifest.sh" >/dev/null
 "$REPO_DIR/scripts/check.sh" --root "$ROOT" --strict >/dev/null
+find "$ROOT" -type f -printf '%P\n' | sort > "$MERGE_ROOT/default-file-set.actual"
+cat > "$MERGE_ROOT/default-file-set.expected" <<'EOF'
+etc/apt/apt.conf.d/90auto-cleanup-periodic
+etc/docker/daemon.json
+etc/logrotate.d/auto-cleanup-btmp
+etc/systemd/journald.conf.d/auto-cleanup-limits.conf
+etc/systemd/system/vps-docker-clean.service
+etc/systemd/system/vps-docker-clean.timer
+usr/local/sbin/vps-docker-clean
+EOF
+if ! cmp -s "$MERGE_ROOT/default-file-set.expected" "$MERGE_ROOT/default-file-set.actual"; then
+    echo "default install file set mismatch" >&2
+    diff -u "$MERGE_ROOT/default-file-set.expected" "$MERGE_ROOT/default-file-set.actual" >&2 || true
+    exit 1
+fi
 backup_count_before=$(find "$ROOT/etc/docker" -name 'daemon.json.auto-cleanup.bak.*' | wc -l)
 "$REPO_DIR/scripts/install.sh" --root "$ROOT" >/dev/null
 backup_count_after=$(find "$ROOT/etc/docker" -name 'daemon.json.auto-cleanup.bak.*' | wc -l)
@@ -807,27 +823,14 @@ if "$REPO_DIR/scripts/uninstall.sh" \
     exit 1
 fi
 
-mkdir -p "$FAKE_ROOT/bin"
-cat > "$FAKE_ROOT/bin/docker" <<'EOF'
-#!/bin/sh
-printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"
-if [ "$1" = "info" ]; then
-    exit 0
-fi
-if [ "$1" = "buildx" ] && [ "$2" = "prune" ] && [ "$3" = "--help" ]; then
-    echo "Usage: docker buildx prune"
-    echo "      --reserved-space bytes"
-fi
-exit 0
-EOF
-chmod +x "$FAKE_ROOT/bin/docker"
 FAKE_DOCKER_LOG="$FAKE_ROOT/docker.log" \
+    FAKE_DOCKER_MODE=buildx-reserved \
     BUILD_CACHE_UNTIL=24h \
     BUILD_CACHE_RESERVED=512MB \
     CONTAINER_UNTIL=48h \
     NETWORK_UNTIL=72h \
     IMAGE_UNTIL=1440h \
-    DOCKER="$FAKE_ROOT/bin/docker" \
+    DOCKER="$REPO_DIR/tests/fixtures/fake-docker.sh" \
     "$REPO_DIR/fixtures/bin/vps-docker-clean" >/dev/null
 
 grep -q -- 'buildx prune -af --filter until=24h --reserved-space 512MB' "$FAKE_ROOT/docker.log"
@@ -839,52 +842,22 @@ if grep -Eq 'volume prune|--volumes' "$FAKE_ROOT/docker.log"; then
     exit 1
 fi
 
-cat > "$FAKE_ROOT/bin/docker-classic" <<'EOF'
-#!/bin/sh
-printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"
-if [ "$1" = "info" ]; then
-    exit 0
-fi
-if [ "$1" = "builder" ] && [ "$2" = "prune" ] && [ "$3" = "--help" ]; then
-    echo "      --keep-storage bytes"
-fi
-exit 0
-EOF
-chmod +x "$FAKE_ROOT/bin/docker-classic"
 FAKE_DOCKER_LOG="$FAKE_ROOT/docker-classic.log" \
-    DOCKER="$FAKE_ROOT/bin/docker-classic" \
+    FAKE_DOCKER_MODE=classic-keep \
+    DOCKER="$REPO_DIR/tests/fixtures/fake-docker.sh" \
     "$REPO_DIR/fixtures/bin/vps-docker-clean" >/dev/null
 grep -q -- '--keep-storage 1GB' "$FAKE_ROOT/docker-classic.log"
 
-cat > "$FAKE_ROOT/bin/docker-builder-reserved" <<'EOF'
-#!/bin/sh
-printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"
-if [ "$1" = "info" ]; then
-    exit 0
-fi
-if [ "$1" = "builder" ] && [ "$2" = "prune" ] && [ "$3" = "--help" ]; then
-    echo "      --reserved-space bytes"
-fi
-exit 0
-EOF
-chmod +x "$FAKE_ROOT/bin/docker-builder-reserved"
 FAKE_DOCKER_LOG="$FAKE_ROOT/docker-builder-reserved.log" \
-    DOCKER="$FAKE_ROOT/bin/docker-builder-reserved" \
+    FAKE_DOCKER_MODE=builder-reserved \
+    DOCKER="$REPO_DIR/tests/fixtures/fake-docker.sh" \
     "$REPO_DIR/fixtures/bin/vps-docker-clean" >/dev/null
 grep -q -- 'builder prune -af --filter until=168h --reserved-space 1GB' \
     "$FAKE_ROOT/docker-builder-reserved.log"
 
-cat > "$FAKE_ROOT/bin/docker-fallback" <<'EOF'
-#!/bin/sh
-printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"
-if [ "$1" = "info" ]; then
-    exit 0
-fi
-exit 0
-EOF
-chmod +x "$FAKE_ROOT/bin/docker-fallback"
 FAKE_DOCKER_LOG="$FAKE_ROOT/docker-fallback.log" \
-    DOCKER="$FAKE_ROOT/bin/docker-fallback" \
+    FAKE_DOCKER_MODE=fallback \
+    DOCKER="$REPO_DIR/tests/fixtures/fake-docker.sh" \
     "$REPO_DIR/fixtures/bin/vps-docker-clean" >/dev/null
 grep -q -- 'builder prune -af --filter until=168h' "$FAKE_ROOT/docker-fallback.log"
 if grep -Eq -- '--keep-storage|--reserved-space' "$FAKE_ROOT/docker-fallback.log"; then
@@ -892,21 +865,9 @@ if grep -Eq -- '--keep-storage|--reserved-space' "$FAKE_ROOT/docker-fallback.log
     exit 1
 fi
 
-cat > "$FAKE_ROOT/bin/docker-no-builder" <<'EOF'
-#!/bin/sh
-printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"
-if [ "$1" = "info" ]; then
-    exit 0
-fi
-if { [ "$1" = "builder" ] || [ "$1" = "buildx" ]; } &&
-    [ "$2" = "prune" ] && [ "$3" = "--help" ]; then
-    exit 1
-fi
-exit 0
-EOF
-chmod +x "$FAKE_ROOT/bin/docker-no-builder"
 FAKE_DOCKER_LOG="$FAKE_ROOT/docker-no-builder.log" \
-    DOCKER="$FAKE_ROOT/bin/docker-no-builder" \
+    FAKE_DOCKER_MODE=no-builder \
+    DOCKER="$REPO_DIR/tests/fixtures/fake-docker.sh" \
     "$REPO_DIR/fixtures/bin/vps-docker-clean" >/dev/null
 if grep -q -- 'builder prune -af' "$FAKE_ROOT/docker-no-builder.log"; then
     echo "missing builder prune command unexpectedly ran build-cache prune" >&2
@@ -914,12 +875,10 @@ if grep -q -- 'builder prune -af' "$FAKE_ROOT/docker-no-builder.log"; then
 fi
 grep -q -- 'container prune -f --filter until=168h' "$FAKE_ROOT/docker-no-builder.log"
 
-cat > "$FAKE_ROOT/bin/docker-down" <<'EOF'
-#!/bin/sh
-exit 1
-EOF
-chmod +x "$FAKE_ROOT/bin/docker-down"
-DOCKER="$FAKE_ROOT/bin/docker-down" "$REPO_DIR/fixtures/bin/vps-docker-clean" >/dev/null
+FAKE_DOCKER_LOG="$FAKE_ROOT/docker-down.log" \
+    FAKE_DOCKER_MODE=down \
+    DOCKER="$REPO_DIR/tests/fixtures/fake-docker.sh" \
+    "$REPO_DIR/fixtures/bin/vps-docker-clean" >/dev/null
 PATH="$FAKE_ROOT/empty-path" \
     DOCKER=docker \
     "$REPO_DIR/fixtures/bin/vps-docker-clean" >/dev/null
