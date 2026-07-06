@@ -230,6 +230,14 @@ The local repo survey and Docker's own documentation point to the same shape:
 
 - Use small, trusted base images and avoid unnecessary packages. This keeps the
   test image understandable and reduces unrelated vulnerability/noise surface.
+- Keep Make as the stable host command surface. Neighboring repos consistently
+  use Make targets as the operator interface even when the actual containment
+  logic lives in a shell wrapper or Compose file.
+- Prefer a direct `docker run` wrapper when the lane is single-container.
+  Local repos that need only a toolchain or test runner use small wrappers or
+  Make recipes; repos that use Compose do so because they have an internal
+  service topology such as PostgreSQL, Haraka, or app-sidecars. This repo has
+  no such topology.
 - Pin base images by named release plus digest. Docker documents that tags are
   mutable and digest pins preserve the exact base image. The tradeoff is that
   digest pinning opts out of automatic base-image fixes, so the plan also needs
@@ -249,6 +257,45 @@ The local repo survey and Docker's own documentation point to the same shape:
 - Use explicit runtime limits and privilege reduction: no-new-privileges,
   cap-drop ALL, no privileged mode, no runtime network, PID/memory limits, and
   a non-root default user.
+- Add posture tests for the harness text and for the in-container environment.
+  This is a common useful pattern in nearby repos: text checks catch accidental
+  removal of critical flags, while runtime checks prove the container actually
+  started with the intended boundary.
+- Use a marker guard for directly executable test entrypoints. The strongest
+  nearby host-refusal example routes public commands through a container
+  dispatcher and tests that the dispatcher refuses host execution; this repo
+  should make that behavior explicit for test scripts.
+- Refuse root host invocation for Docker test lanes. Running the host wrapper
+  as uid 0 hides permission mistakes and weakens the broad non-root contract.
+
+Local precedent audit
+---------------------
+
+The survey of neighboring repositories changes the plan only by making several
+decisions firmer:
+
+- `the-dark-side` and `id-overlay` are useful direct-runner references: small
+  Bash wrappers, array-based Docker invocation, explicit env passing, resource
+  limits, read-only rootfs, dropped capabilities, no-new-privileges, and
+  networkless ordinary checks.
+- `nmr-api-v1` and `grimace-py` are the strongest copied-context precedents.
+  Their broad test lanes build from the repository context and run from image
+  state rather than a live writable host checkout.
+- `agent-mail` and `nmr-api-v1` justify Compose only when tests need a private
+  service topology. `auto-cleanup` should not introduce Compose merely to run a
+  single shell test runner.
+- `bolt-spec-v0`, `id-overlay`, and `the-dark-side` show strict containment
+  around bind-mounted checkouts, but those are app/toolchain repos whose normal
+  development loop needs live source access. They are not precedent for a
+  bind-mounted default verification lane in this installer repo.
+- `the-dark-side`, `nmr-api-v1`, and `grimace-py` all reinforce posture tests as
+  first-class tests rather than README-only promises.
+
+The consequence for this repo is: keep the default lane stricter than most
+nearby app repos. Use copied image context, no runtime repository mount, no
+runtime network, no Docker socket, and non-root execution as the normal
+verification path. A debug shell may exist, but it must be named and documented
+as a separate lane.
 
 Base-image update policy
 ------------------------
@@ -1258,3 +1305,14 @@ References consulted
   https://docs.docker.com/reference/cli/docker/container/run/
 - Docker build context and .dockerignore behavior:
   https://docs.docker.com/build/building/context/
+- Local direct-runner precedents:
+  `/home/ra/repos/the-dark-side/scripts/dev-container.sh`,
+  `/home/ra/repos/id-overlay/scripts/docker-release-checks.sh`,
+  `/home/ra/repos/bolt-spec-v0/Makefile`
+- Local copied-context and posture precedents:
+  `/home/ra/repos/nmr-api-v1/Makefile`,
+  `/home/ra/repos/nmr-api-v1/compose/test.yml`,
+  `/home/ra/repos/nmr-api-v1/compose/checks.yml`,
+  `/home/ra/repos/grimace-py/notes/014_strict_containerization_plan.md`
+- Local host-refusal and posture-test precedent:
+  `/home/ra/repos/the-dark-side/tests/test_container_tooling.py`
