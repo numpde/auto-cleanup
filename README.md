@@ -23,7 +23,7 @@ Default installed policy:
 | Area | Default |
 | --- | --- |
 | Docker logs | `local` driver, `10m` x `3`, compressed |
-| Docker build cache | prune older than `168h`, reserve `1GB` |
+| Docker build cache | prune older than `168h`; reserve `1GB` when the selected CLI supports a local-builder reserve flag |
 | Docker containers/networks | prune unused older than `168h` |
 | Docker images | prune unused older than `720h` |
 | journald | `SystemMaxUse=300M`, `SystemKeepFree=1G`, `MaxRetentionSec=14day` |
@@ -42,8 +42,9 @@ This repo intentionally does not install jobs that run:
 The normal workflow is: review the planned writes, stage them under a
 temporary root if you want to inspect the file tree, then install on the host.
 
-Review the plan first. Dry-run does not install files, but it still validates
-Docker daemon JSON when Docker config management is enabled:
+Review the plan first. Dry-run does not install files, but it still parses the
+existing Docker daemon JSON and the repo policy when Docker config management
+is enabled:
 
 ```sh
 ./scripts/install.sh --dry-run
@@ -59,8 +60,9 @@ sudo ./scripts/install.sh
 ```
 
 You can run `--dry-run` and `--root` without sudo. Repository tests are
-container-only; use `make test`. Use sudo only for a real install or uninstall
-against `/etc`, `/usr/local`, and systemd.
+container-only; use `make test` for the default lane or `make test/all` for the
+full local suite. Use sudo only for a real install or uninstall against `/etc`,
+`/usr/local`, and systemd.
 
 By default, a real install writes to these Linux locations:
 
@@ -76,7 +78,8 @@ By default, a real install writes to these Linux locations:
 When service actions are enabled, the installer runs `systemctl daemon-reload`,
 enables `vps-docker-clean.timer`, and restarts `systemd-journald` if the
 journald fixture was installed. Docker is restarted only when you pass
-`--restart-docker`.
+`--restart-docker`. That is an immediate Docker service restart; expect running
+containers to be interrupted according to your Docker/systemd restart policy.
 
 The Docker daemon config is merged as JSON and backed up before modification.
 Unrelated daemon keys are preserved, while `log-driver` and `log-opts` are
@@ -87,15 +90,17 @@ recreated before they use the new logging driver. The installer does not
 restart Docker by default. If `/etc/docker/daemon.json` is a symlink, the
 installer refuses to replace it; merge that case manually.
 
-When `dockerd` is available, install and strict checks also run
-`dockerd --validate --config-file` against the daemon JSON. That validates the
+When `dockerd` is available, real installs prevalidate the would-be merged
+daemon JSON before replacing `/etc/docker/daemon.json`; strict checks validate
+the installed daemon JSON. `dockerd --validate --config-file` validates the
 config file itself, but it cannot prove that the host's Docker service command
 line has no duplicate flags. If your Docker service starts `dockerd` with
 `--log-driver` or `--log-opt`, remove those flags or merge the logging policy
 manually before restarting Docker.
 
 For files owned by this repo, the installer also refuses to replace symlink or
-non-regular destinations. Move or resolve those manually before installing.
+non-regular destinations, and refuses destination paths whose existing parent
+directories are symlinks. Move or resolve those manually before installing.
 
 Common install switches:
 
@@ -106,7 +111,8 @@ Common install switches:
 - `--skip-journald` leaves journald configuration untouched.
 - `--skip-btmp-logrotate` leaves btmp rotation untouched.
 - `--skip-apt-periodic` leaves APT periodic cleanup untouched.
-- `--restart-docker` restarts Docker after updating daemon config.
+- `--restart-docker` restarts Docker immediately after updating daemon config;
+  this can interrupt running containers.
 - `--no-enable-timer` installs the timer without enabling it.
 - `--no-service-actions` skips all `systemctl` calls for file-only installs.
 
@@ -129,10 +135,10 @@ Docker daemon JSON management is enabled.
 At runtime, the installed policy assumes a systemd-based host with logrotate
 and the distro's APT periodic timer machinery available.
 
-After install, restart Docker when convenient. Existing containers must then be
-recreated before they use the new daemon logging defaults. For Compose-managed
-workloads, run the Compose command from each workload's own Compose project
-directory:
+After install, restart Docker when convenient unless you deliberately used
+`--restart-docker`. Existing containers must then be recreated before they use
+the new daemon logging defaults. For Compose-managed workloads, run the Compose
+command from each workload's own Compose project directory:
 
 ```sh
 sudo systemctl restart docker
@@ -240,11 +246,17 @@ local Docker CLI supports. Classic `docker builder prune` uses
 `--reserved-space`. The default path stays on `docker builder prune` so cleanup
 targets the local Docker builder cache. If neither builder storage-reservation
 flag is advertised, the script still prunes old local build cache but skips the
-reservation flag. `docker buildx prune` is used only when
+reservation flag. This means the build-cache age policy is still applied, but
+the `BUILD_CACHE_RESERVED` floor is not enforceable on that Docker CLI.
+`docker buildx prune` is used only when
 `ALLOW_BUILDX_PRUNE=1` is set, because Buildx prunes the selected builder,
 which may be remote, shared, or otherwise different from the local builder. If
 no supported build-cache prune command is available, it skips build-cache
 cleanup and continues with the other safe Docker prune steps.
+
+Individual prune command failures are reported, but the cleanup script still
+attempts the remaining safe prune categories before exiting nonzero. That keeps
+one failed cleanup area from preventing the rest of the scheduled cleanup.
 
 If the Docker CLI is missing or the Docker daemon is not reachable, the cleanup
 script exits successfully without pruning. That avoids noisy timer failures on
@@ -256,6 +268,8 @@ coalescing within `AccuracySec=1h`.
 
 The installed cleanup script accepts these optional environment overrides.
 `DOCKER` must be an executable name or path, not a command line with arguments.
+The override file is loaded by systemd as an `EnvironmentFile`; it is not a
+shell script, and shell expansions or extra command arguments are not evaluated.
 
 - `DOCKER`, default `docker`
 - `BUILD_CACHE_UNTIL`, default `168h`
@@ -309,12 +323,17 @@ Repository tests are intentionally containerized. `make test` builds the pinned
 Debian test image from the copied repository context, then runs the broad
 in-container suite as a non-root user with no network, no Docker socket, a
 read-only root filesystem, dropped capabilities, and `/tmp` mounted noexec.
+The build context is deny-by-default and explicitly allowlists the source files
+needed by the test image; posture canaries check that common local secrets and
+generated files, including files under allowlisted source directories, stay out
+of the image.
 
 The test entrypoints refuse direct host execution. Run them through Make so the
 container wrapper can set the in-container guard:
 
 ```sh
 make test              # default Debian broad lane
+make test/all          # posture, matrix, and root metadata lanes
 make test/matrix       # Debian and Ubuntu broad lanes
 make test/posture      # build-context and container-hardening canaries
 make test/root-container  # narrow root metadata lane

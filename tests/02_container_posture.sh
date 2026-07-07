@@ -19,6 +19,15 @@ require_text() {
     fi
 }
 
+require_line() {
+    text=$1
+    line=$2
+    if ! printf '%s\n' "$text" | grep -Fxq -- "$line"; then
+        echo "missing expected argv line: $line" >&2
+        exit 1
+    fi
+}
+
 reject_text() {
     file=$1
     text=$2
@@ -28,20 +37,38 @@ reject_text() {
     fi
 }
 
-require_text "$wrapper" "--network none"
-require_text "$wrapper" "--read-only"
-require_text "$wrapper" "--cap-drop ALL"
-require_text "$wrapper" "--security-opt no-new-privileges:true"
-require_text "$wrapper" "--pull=never"
-require_text "$wrapper" "--user 65532:65532"
-require_text "$wrapper" "--pids-limit"
-require_text "$wrapper" "--memory"
-require_text "$wrapper" "--memory-swap"
-require_text "$wrapper" "--tmpfs /tmp:rw,nosuid,nodev,noexec"
-require_text "$wrapper" "--env AUTO_CLEANUP_TEST_CONTAINER=1"
-require_text "$wrapper" "--env AUTO_CLEANUP_TEST_ROOT_CONTAINER=1"
-require_text "$wrapper" "--cap-add CHOWN"
-require_text "$wrapper" "--cap-add FOWNER"
+broad_argv=$("$wrapper" inspect/test)
+root_argv=$("$wrapper" inspect/root-container)
+
+require_line "$broad_argv" "--network"
+require_line "$broad_argv" "none"
+require_line "$broad_argv" "--read-only"
+require_line "$broad_argv" "--cap-drop"
+require_line "$broad_argv" "ALL"
+require_line "$broad_argv" "--security-opt"
+require_line "$broad_argv" "no-new-privileges:true"
+require_line "$broad_argv" "--pull=never"
+require_line "$broad_argv" "--user"
+require_line "$broad_argv" "65532:65532"
+require_line "$broad_argv" "--pids-limit"
+require_line "$broad_argv" "--memory"
+require_line "$broad_argv" "--memory-swap"
+require_line "$broad_argv" "--tmpfs"
+require_line "$broad_argv" "/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777"
+require_line "$broad_argv" "AUTO_CLEANUP_TEST_CONTAINER=1"
+
+require_line "$root_argv" "--user"
+require_line "$root_argv" "0:0"
+require_line "$root_argv" "--network"
+require_line "$root_argv" "none"
+require_line "$root_argv" "--read-only"
+require_line "$root_argv" "--cap-drop"
+require_line "$root_argv" "ALL"
+require_line "$root_argv" "--cap-add"
+require_line "$root_argv" "CHOWN"
+require_line "$root_argv" "FOWNER"
+require_line "$root_argv" "AUTO_CLEANUP_TEST_CONTAINER=1"
+require_line "$root_argv" "AUTO_CLEANUP_TEST_ROOT_CONTAINER=1"
 require_text "$wrapper" "AUTO_CLEANUP_ALLOW_ROOT_TESTS"
 require_text "$wrapper" "DOCKER_CLI:-docker"
 reject_text "$wrapper" "/var/run/docker.sock"
@@ -93,9 +120,12 @@ for entrypoint in "$REPO_DIR"/tests/*.sh; do
 done
 
 test "$(sed -n '1p' "$REPO_DIR/.dockerignore")" = "*"
-require_text "$REPO_DIR/.dockerignore" "!fixtures/**"
-require_text "$REPO_DIR/.dockerignore" "!scripts/**"
-require_text "$REPO_DIR/.dockerignore" "!tests/**"
+reject_text "$REPO_DIR/.dockerignore" "!fixtures/**"
+reject_text "$REPO_DIR/.dockerignore" "!scripts/**"
+reject_text "$REPO_DIR/.dockerignore" "!tests/**"
+require_text "$REPO_DIR/.dockerignore" "!fixtures/bin/vps-docker-clean"
+require_text "$REPO_DIR/.dockerignore" "!scripts/install.sh"
+require_text "$REPO_DIR/.dockerignore" "!tests/30_functionality.sh"
 require_text "$REPO_DIR/.dockerignore" "!notes/001_containerized_test_strategy.txt"
 for absent in .git .agents .codex; do
     if [ -e "$REPO_DIR/$absent" ]; then
@@ -107,6 +137,7 @@ done
 workflow="$REPO_DIR/.github/workflows/container-tests.yml"
 require_text "$workflow" "permissions:"
 require_text "$workflow" "contents: read"
+require_text "$workflow" "timeout-minutes:"
 require_text "$workflow" "persist-credentials: false"
 require_text "$workflow" "make test/posture"
 require_text "$workflow" "make test/matrix"
@@ -116,5 +147,10 @@ reject_text "$workflow" "./tests/run.sh"
 reject_text "$workflow" "./tests/30_functionality.sh"
 reject_text "$workflow" "./tests/check-manifest.sh"
 reject_text "$workflow" "/var/run/docker.sock"
+reject_text "$workflow" "services:"
+reject_text "$workflow" "secrets."
+reject_text "$workflow" "GITHUB_TOKEN"
+reject_text "$workflow" "docker login"
+reject_text "$workflow" "sudo "
 
 echo "container posture ok"

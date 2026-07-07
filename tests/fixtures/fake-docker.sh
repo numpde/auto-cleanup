@@ -14,7 +14,7 @@ if [ "${1:-}" = "info" ]; then
 fi
 
 case "$mode:$*" in
-    buildx-reserved:builder\ prune\ --help|fallback:builder\ prune\ --help)
+    buildx-reserved:builder\ prune\ --help|fallback:builder\ prune\ --help|fail-container-prune:builder\ prune\ --help)
         echo "Usage: docker builder prune"
         exit 0
         ;;
@@ -27,10 +27,6 @@ case "$mode:$*" in
         echo "      --keep-storage bytes"
         exit 0
         ;;
-    builder-reserved:builder\ prune\ --help)
-        echo "      --reserved-space bytes"
-        exit 0
-        ;;
     no-builder:builder\ prune\ --help|no-builder:buildx\ prune\ --help)
         exit 1
         ;;
@@ -38,11 +34,17 @@ esac
 
 case "$*" in
     container\ prune\ -f\ --filter\ until=*|network\ prune\ -f\ --filter\ until=*|image\ prune\ -af\ --filter\ until=*)
+        if [ "$mode" = "fail-container-prune" ] && [ "${1:-}" = "container" ]; then
+            exit 42
+        fi
         exit 0
         ;;
 esac
 
 case "$mode:$*" in
+    fail-container-prune:builder\ prune\ -af\ --filter\ until=*)
+        exit 0
+        ;;
     buildx-reserved:builder\ prune\ -af\ --filter\ until=*)
         exit 0
         ;;
@@ -50,9 +52,6 @@ case "$mode:$*" in
         exit 0
         ;;
     classic-keep:builder\ prune\ -af\ --filter\ until=*\ --keep-storage\ *)
-        exit 0
-        ;;
-    builder-reserved:builder\ prune\ -af\ --filter\ until=*\ --reserved-space\ *)
         exit 0
         ;;
     fallback:builder\ prune\ -af\ --filter\ until=*)

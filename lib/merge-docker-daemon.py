@@ -108,17 +108,42 @@ def copy_backup(src, dst, owner):
         os.fsync(handle.fileno())
 
 
+def validate_raw_absolute_path(raw_path, label):
+    if not raw_path.startswith("/"):
+        raise SystemExit(f"{raw_path}: {label} path must be absolute")
+    if raw_path.startswith("//"):
+        raise SystemExit(f"{raw_path}: {label} path must not start with //")
+    components = raw_path.split("/")
+    if "." in components or ".." in components:
+        raise SystemExit(f"{raw_path}: {label} path must not contain '.' or '..' components")
+
+
+def reject_symlink_parents(path):
+    current = pathlib.Path(path.anchor)
+    for component in path.parent.parts[1:]:
+        current = current / component
+        if current.is_symlink():
+            raise SystemExit(f"{path}: refusing path through symlink directory: {current}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Merge Docker daemon log policy")
     parser.add_argument("--daemon-json", required=True)
     parser.add_argument("--policy-json", required=True)
+    parser.add_argument(
+        "--output-json",
+        help="write the merged daemon JSON to this path without updating daemon-json",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
+    validate_raw_absolute_path(args.daemon_json, "daemon")
+    if args.output_json is not None:
+        validate_raw_absolute_path(args.output_json, "output")
+
     daemon_path = pathlib.Path(args.daemon_json)
     policy_path = pathlib.Path(args.policy_json)
-    if not daemon_path.is_absolute():
-        raise SystemExit(f"{daemon_path}: daemon path must be absolute")
+    reject_symlink_parents(daemon_path)
     if daemon_path.is_symlink():
         raise SystemExit(f"{daemon_path}: refusing to replace symlink")
     if daemon_path.exists() and not daemon_path.is_file():
@@ -135,6 +160,20 @@ def main():
     merged.update(policy)
 
     output = json.dumps(merged, indent=2, sort_keys=True) + "\n"
+    if args.output_json is not None:
+        output_path = pathlib.Path(args.output_json)
+        reject_symlink_parents(output_path)
+        if output_path.is_symlink():
+            raise SystemExit(f"{output_path}: refusing to replace symlink")
+        if output_path.exists() and not output_path.is_file():
+            raise SystemExit(f"{output_path}: expected a regular file")
+        if args.dry_run:
+            print(f"would write merged daemon JSON to {output_path}")
+            return 0
+        atomic_write(output_path, output, 0o644, None)
+        print(f"wrote merged daemon JSON to {output_path}")
+        return 0
+
     if daemon_path.exists() and daemon_path.read_text(encoding="utf-8") == output:
         print(f"unchanged {daemon_path}")
         return 0

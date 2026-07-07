@@ -8,6 +8,8 @@ Usage:
   ./scripts/test-container.sh test/matrix
   ./scripts/test-container.sh test/root-container
   ./scripts/test-container.sh test/posture
+  ./scripts/test-container.sh inspect/test
+  ./scripts/test-container.sh inspect/root-container
   ./scripts/test-container.sh shell
 
 Environment:
@@ -21,7 +23,7 @@ docker_cli="${DOCKER_CLI:-docker}"
 mode="${1:-test}"
 
 case "$mode" in
-  test|test/matrix|test/root-container|test/posture|shell) ;;
+  test|test/matrix|test/root-container|test/posture|inspect/test|inspect/root-container|shell) ;;
   -h|--help)
     usage
     exit 0
@@ -39,7 +41,9 @@ if [[ "$(id -u)" == "0" && "${AUTO_CLEANUP_ALLOW_ROOT_TESTS:-}" != "1" ]]; then
   exit 2
 fi
 
-if ! command -v "$docker_cli" >/dev/null 2>&1; then
+if [[ "$mode" == inspect/* ]]; then
+  :
+elif ! command -v "$docker_cli" >/dev/null 2>&1; then
   echo "Container engine not found: $docker_cli" >&2
   exit 1
 fi
@@ -101,11 +105,10 @@ build_image() {
     "$context_dir"
 }
 
-run_broad_lane() {
-  lane=$1
-  image_tag=$(lane_image_tag "$lane")
-  echo "Running test lane: $lane"
-  "$docker_cli" run \
+broad_run_argv() {
+  image_tag=$1
+  printf '%s\n' \
+    run \
     --rm \
     --init \
     --pull=never \
@@ -124,14 +127,15 @@ run_broad_lane() {
     --tmpfs /tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777 \
     --tmpfs /run/auto-cleanup-test:rw,nosuid,nodev,exec,size=256m,mode=1777 \
     --workdir /work \
-    "$image_tag" /bin/sh /work/tests/run-all.sh
+    "$image_tag" \
+    /bin/sh \
+    /work/tests/run-all.sh
 }
 
-run_root_lane() {
-  lane=debian-12-slim
-  image_tag=$(lane_image_tag "$lane")
-  echo "Running root metadata lane: $lane"
-  "$docker_cli" run \
+root_run_argv() {
+  image_tag=$1
+  printf '%s\n' \
+    run \
     --rm \
     --init \
     --pull=never \
@@ -153,7 +157,25 @@ run_root_lane() {
     --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m,mode=1777 \
     --tmpfs /run/auto-cleanup-test:rw,nosuid,nodev,exec,size=128m,mode=1777 \
     --workdir /work \
-    "$image_tag" /bin/sh /work/tests/root-metadata.sh
+    "$image_tag" \
+    /bin/sh \
+    /work/tests/root-metadata.sh
+}
+
+run_broad_lane() {
+  lane=$1
+  image_tag=$(lane_image_tag "$lane")
+  echo "Running test lane: $lane"
+  mapfile -t docker_args < <(broad_run_argv "$image_tag")
+  "$docker_cli" "${docker_args[@]}"
+}
+
+run_root_lane() {
+  lane=debian-12-slim
+  image_tag=$(lane_image_tag "$lane")
+  echo "Running root metadata lane: $lane"
+  mapfile -t docker_args < <(root_run_argv "$image_tag")
+  "$docker_cli" "${docker_args[@]}"
 }
 
 run_build_context_canary() {
@@ -175,6 +197,9 @@ run_build_context_canary() {
   printf '%s\n' "$canary" > "$tmp_context/.env"
   printf '%s\n' "$canary" > "$tmp_context/id_rsa"
   printf '%s\n' "$canary" > "$tmp_context/local.log"
+  printf '%s\n' "$canary" > "$tmp_context/scripts/.env"
+  printf '%s\n' "$canary" > "$tmp_context/tests/id_rsa"
+  printf '%s\n' "$canary" > "$tmp_context/fixtures/local.log"
   build_image "$lane" "$tmp_context"
   image_tag=$(lane_image_tag "$lane")
   "$docker_cli" run \
@@ -192,13 +217,19 @@ run_build_context_canary() {
     --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777 \
     --workdir /work \
     "$image_tag" /bin/sh -eu -c \
-      'for path in ".git" ".agents" ".codex" "__pycache__" "tmp" ".env" "id_rsa" "local.log"; do test ! -e "/work/$path"; done'
+      'for path in ".git" ".agents" ".codex" "__pycache__" "tmp" ".env" "id_rsa" "local.log" "scripts/.env" "tests/id_rsa" "fixtures/local.log"; do if test -e "/work/$path"; then echo "ignored build-context path reached test image: $path" >&2; exit 1; fi; done'
   cleanup_context
   trap - EXIT
   echo "build context canary ok"
 }
 
 case "$mode" in
+  inspect/test)
+    broad_run_argv "$(lane_image_tag debian-12-slim)"
+    ;;
+  inspect/root-container)
+    root_run_argv "$(lane_image_tag debian-12-slim)"
+    ;;
   test)
     build_image debian-12-slim
     run_broad_lane debian-12-slim

@@ -46,6 +46,44 @@ validate_path() {
     esac
 }
 
+assert_parent_path_safe() {
+    root=$1
+    path=$2
+
+    if [ -n "$root" ]; then
+        case "$path" in
+            "$root"/*) ;;
+            *)
+                echo "refusing path outside staged root: $path" >&2
+                exit 1
+                ;;
+        esac
+
+        if [ -L "$root" ]; then
+            echo "refusing staged root symlink: $root" >&2
+            exit 1
+        fi
+    fi
+
+    parent=$(dirname -- "$path")
+    case "$parent" in
+        /) return 0 ;;
+    esac
+    rel=${parent#/}
+    current=
+    old_ifs=$IFS
+    IFS=/
+    for component in $rel; do
+        current=$current/$component
+        if [ -L "$current" ]; then
+            IFS=$old_ifs
+            echo "refusing path through symlink directory: $current" >&2
+            exit 1
+        fi
+    done
+    IFS=$old_ifs
+}
+
 has_existing_apt_cleanup_policy() {
     dir=$1
     apt_cleanup_re='^[[:space:]]*APT::Periodic::(AutocleanInterval|CleanInterval)'

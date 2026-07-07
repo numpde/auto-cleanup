@@ -145,13 +145,14 @@ print_restore_next_steps() {
         echo "After restoring Docker daemon config:"
     fi
     echo
-    echo "  systemctl restart docker"
+    echo "  sudo systemctl restart docker"
     echo "  # then recreate each Compose-managed workload from that workload's Compose project directory:"
     echo "  docker compose up -d --force-recreate"
 }
 
 remove_file() {
     path=$1
+    assert_parent_path_safe "$ROOT" "$path"
     if [ -L "$path" ]; then
         run rm -f "$path"
     elif [ -e "$path" ] && [ ! -f "$path" ]; then
@@ -187,6 +188,9 @@ if [ -n "$RESTORE_DOCKER_BACKUP" ] && [ -e "$DAEMON_JSON" ] && [ ! -f "$DAEMON_J
     echo "refusing to replace non-regular file: $DAEMON_JSON" >&2
     exit 1
 fi
+if [ -n "$RESTORE_DOCKER_BACKUP" ]; then
+    assert_parent_path_safe "$ROOT" "$DAEMON_JSON"
+fi
 
 if [ "$SYSTEMD_ACTIONS" -eq 1 ] && command -v systemctl >/dev/null 2>&1; then
     if [ "$DRY_RUN" -eq 1 ]; then
@@ -211,6 +215,7 @@ fi
 
 if [ -n "$RESTORE_DOCKER_BACKUP" ]; then
     run install -d -m 0755 "$(dirname -- "$DAEMON_JSON")"
+    assert_parent_path_safe "$ROOT" "$DAEMON_JSON"
     run cp -p "$RESTORE_DOCKER_BACKUP" "$DAEMON_JSON"
 else
     echo "Left Docker daemon config unchanged: $DAEMON_JSON"

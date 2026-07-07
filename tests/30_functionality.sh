@@ -288,6 +288,28 @@ backup_stat = os.stat(backups[0])
 assert (backup_stat.st_uid, backup_stat.st_gid) == (daemon_stat.st_uid, daemon_stat.st_gid)
 PY
 
+mkdir -p "$MERGE_ROOT/validate-rollback/etc/docker"
+cat > "$MERGE_ROOT/validate-rollback/etc/docker/daemon.json" <<'EOF'
+{"debug": false}
+EOF
+if FAKE_DOCKERD_LOG="$FAKE_ROOT/dockerd-install-reject.log" \
+    FAKE_DOCKERD_MODE=reject \
+    PATH="$FAKE_ROOT/dockerd-bin:$PATH" \
+    "$REPO_DIR/scripts/install.sh" --root "$MERGE_ROOT/validate-rollback" >/dev/null 2>&1; then
+    echo "install unexpectedly accepted dockerd-rejected daemon config" >&2
+    exit 1
+fi
+grep -q -- '--validate --config-file' "$FAKE_ROOT/dockerd-install-reject.log"
+python3 - "$MERGE_ROOT/validate-rollback/etc/docker/daemon.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    data = json.load(handle)
+assert data == {"debug": False}
+PY
+test ! -e "$MERGE_ROOT/validate-rollback/usr/local/sbin/vps-docker-clean"
+
 expect_fail() {
     label=$1
     shift
@@ -332,6 +354,88 @@ expect_fail "uninstall dotdot-component Docker backup" \
     "$REPO_DIR/scripts/uninstall.sh" --restore-docker-backup /tmp/../daemon.json.auto-cleanup.bak
 expect_fail "uninstall shell-metachar Docker backup" \
     "$REPO_DIR/scripts/uninstall.sh" --restore-docker-backup '/tmp/daemon$backup.json'
+expect_fail "merge helper dot-component daemon path" \
+    "$REPO_DIR/lib/merge-docker-daemon.py" \
+    --daemon-json /tmp/./daemon.json \
+    --policy-json "$REPO_DIR/fixtures/docker/daemon-log-policy.json" \
+    --dry-run
+expect_fail "merge helper dotdot-component output path" \
+    "$REPO_DIR/lib/merge-docker-daemon.py" \
+    --daemon-json "$MERGE_ROOT/etc/docker/daemon.json" \
+    --policy-json "$REPO_DIR/fixtures/docker/daemon-log-policy.json" \
+    --output-json /tmp/../daemon.json
+DRY_OUTPUT="$MERGE_ROOT/dry-output.json"
+"$REPO_DIR/lib/merge-docker-daemon.py" \
+    --daemon-json "$MERGE_ROOT/etc/docker/daemon.json" \
+    --policy-json "$REPO_DIR/fixtures/docker/daemon-log-policy.json" \
+    --output-json "$DRY_OUTPUT" \
+    --dry-run >/dev/null
+test ! -e "$DRY_OUTPUT"
+
+REAL_SYMLINK_PARENT="$MERGE_ROOT/real-parent-symlink"
+REAL_SYMLINK_VICTIM="$MERGE_ROOT/real-parent-symlink-victim"
+mkdir -p "$REAL_SYMLINK_VICTIM" "$MERGE_ROOT/real-etc"
+ln -s "$REAL_SYMLINK_VICTIM" "$REAL_SYMLINK_PARENT"
+if "$REPO_DIR/scripts/install.sh" \
+    --prefix "$REAL_SYMLINK_PARENT/auto-cleanup" \
+    --etc-dir "$MERGE_ROOT/real-etc" \
+    --skip-docker-config \
+    --skip-journald \
+    --skip-btmp-logrotate \
+    --skip-apt-periodic >/dev/null 2>&1; then
+    echo "install unexpectedly followed a real parent symlink" >&2
+    exit 1
+fi
+test ! -e "$REAL_SYMLINK_VICTIM/auto-cleanup/sbin/vps-docker-clean"
+
+HELPER_SYMLINK_PARENT="$MERGE_ROOT/helper-parent-symlink"
+HELPER_SYMLINK_VICTIM="$MERGE_ROOT/helper-parent-symlink-victim"
+mkdir -p "$HELPER_SYMLINK_VICTIM"
+ln -s "$HELPER_SYMLINK_VICTIM" "$HELPER_SYMLINK_PARENT"
+expect_fail "merge helper parent symlink daemon path" \
+    "$REPO_DIR/lib/merge-docker-daemon.py" \
+    --daemon-json "$HELPER_SYMLINK_PARENT/daemon.json" \
+    --policy-json "$REPO_DIR/fixtures/docker/daemon-log-policy.json" \
+    --dry-run
+
+STAGED_SYMLINK_INSTALL_ROOT="$MERGE_ROOT/staged-symlink-install"
+STAGED_SYMLINK_INSTALL_VICTIM="$MERGE_ROOT/staged-symlink-install-victim"
+mkdir -p "$STAGED_SYMLINK_INSTALL_ROOT" "$STAGED_SYMLINK_INSTALL_VICTIM"
+ln -s "$STAGED_SYMLINK_INSTALL_VICTIM" "$STAGED_SYMLINK_INSTALL_ROOT/etc"
+if "$REPO_DIR/scripts/install.sh" \
+    --root "$STAGED_SYMLINK_INSTALL_ROOT" \
+    --skip-docker-config >/dev/null 2>&1; then
+    echo "install unexpectedly followed a staged parent symlink" >&2
+    exit 1
+fi
+test ! -e "$STAGED_SYMLINK_INSTALL_VICTIM/systemd/system/vps-docker-clean.service"
+
+STAGED_SYMLINK_UNINSTALL_ROOT="$MERGE_ROOT/staged-symlink-uninstall"
+STAGED_SYMLINK_UNINSTALL_VICTIM="$MERGE_ROOT/staged-symlink-uninstall-victim"
+mkdir -p "$STAGED_SYMLINK_UNINSTALL_ROOT/usr" "$STAGED_SYMLINK_UNINSTALL_VICTIM/sbin"
+printf '%s\n' keep > "$STAGED_SYMLINK_UNINSTALL_VICTIM/sbin/vps-docker-clean"
+ln -s "$STAGED_SYMLINK_UNINSTALL_VICTIM" "$STAGED_SYMLINK_UNINSTALL_ROOT/usr/local"
+if "$REPO_DIR/scripts/uninstall.sh" \
+    --root "$STAGED_SYMLINK_UNINSTALL_ROOT" \
+    --skip-journald \
+    --skip-btmp-logrotate \
+    --skip-apt-periodic >/dev/null 2>&1; then
+    echo "uninstall unexpectedly followed a staged parent symlink" >&2
+    exit 1
+fi
+grep -q keep "$STAGED_SYMLINK_UNINSTALL_VICTIM/sbin/vps-docker-clean"
+
+STAGED_SYMLINK_RESTORE_ROOT="$MERGE_ROOT/staged-symlink-restore"
+STAGED_SYMLINK_RESTORE_VICTIM="$MERGE_ROOT/staged-symlink-restore-victim"
+mkdir -p "$STAGED_SYMLINK_RESTORE_ROOT/etc" "$STAGED_SYMLINK_RESTORE_VICTIM"
+ln -s "$STAGED_SYMLINK_RESTORE_VICTIM" "$STAGED_SYMLINK_RESTORE_ROOT/etc/docker"
+if "$REPO_DIR/scripts/uninstall.sh" \
+    --root "$STAGED_SYMLINK_RESTORE_ROOT" \
+    --restore-docker-backup "$ROOT/backup/daemon.json" >/dev/null 2>&1; then
+    echo "restore unexpectedly followed a staged parent symlink" >&2
+    exit 1
+fi
+test ! -e "$STAGED_SYMLINK_RESTORE_VICTIM/daemon.json"
 
 # Dry-run and custom path behavior.
 custom_etc_install_output=$("$REPO_DIR/scripts/install.sh" \
@@ -914,13 +1018,6 @@ FAKE_DOCKER_LOG="$FAKE_ROOT/docker-classic.log" \
     "$REPO_DIR/fixtures/bin/vps-docker-clean" >/dev/null
 grep -q -- '--keep-storage 1GB' "$FAKE_ROOT/docker-classic.log"
 
-FAKE_DOCKER_LOG="$FAKE_ROOT/docker-builder-reserved.log" \
-    FAKE_DOCKER_MODE=builder-reserved \
-    DOCKER="$REPO_DIR/tests/fixtures/fake-docker.sh" \
-    "$REPO_DIR/fixtures/bin/vps-docker-clean" >/dev/null
-grep -q -- 'builder prune -af --filter until=168h --reserved-space 1GB' \
-    "$FAKE_ROOT/docker-builder-reserved.log"
-
 FAKE_DOCKER_LOG="$FAKE_ROOT/docker-fallback.log" \
     FAKE_DOCKER_MODE=fallback \
     DOCKER="$REPO_DIR/tests/fixtures/fake-docker.sh" \
@@ -940,6 +1037,18 @@ if grep -q -- 'builder prune -af' "$FAKE_ROOT/docker-no-builder.log"; then
     exit 1
 fi
 grep -q -- 'container prune -f --filter until=168h' "$FAKE_ROOT/docker-no-builder.log"
+
+if FAKE_DOCKER_LOG="$FAKE_ROOT/docker-fail-container.log" \
+    FAKE_DOCKER_MODE=fail-container-prune \
+    DOCKER="$REPO_DIR/tests/fixtures/fake-docker.sh" \
+    "$REPO_DIR/fixtures/bin/vps-docker-clean" >/dev/null 2>"$FAKE_ROOT/docker-fail-container.err"; then
+    echo "cleanup unexpectedly succeeded after a prune failure" >&2
+    exit 1
+fi
+grep -q -- 'container prune -f --filter until=168h' "$FAKE_ROOT/docker-fail-container.log"
+grep -q -- 'network prune -f --filter until=168h' "$FAKE_ROOT/docker-fail-container.log"
+grep -q -- 'image prune -af --filter until=720h' "$FAKE_ROOT/docker-fail-container.log"
+grep -q -- 'One or more Docker cleanup commands failed.' "$FAKE_ROOT/docker-fail-container.err"
 
 FAKE_DOCKER_LOG="$FAKE_ROOT/docker-down.log" \
     FAKE_DOCKER_MODE=down \

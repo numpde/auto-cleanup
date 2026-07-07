@@ -19,9 +19,17 @@ if ! "$DOCKER" info >/dev/null 2>&1; then
     exit 0
 fi
 
+failures=0
+
 run_docker() {
     echo "+ $DOCKER $*"
-    "$DOCKER" "$@"
+    if "$DOCKER" "$@"; then
+        return 0
+    fi
+    status=$?
+    failures=1
+    echo "Docker command failed ($status): $DOCKER $*" >&2
+    return 0
 }
 
 help_has() {
@@ -38,10 +46,6 @@ if help_has "$builder_help" '--keep-storage'; then
     run_docker builder prune -af \
         --filter "until=$BUILD_CACHE_UNTIL" \
         --keep-storage "$BUILD_CACHE_RESERVED"
-elif help_has "$builder_help" '--reserved-space'; then
-    run_docker builder prune -af \
-        --filter "until=$BUILD_CACHE_UNTIL" \
-        --reserved-space "$BUILD_CACHE_RESERVED"
 elif [ "$ALLOW_BUILDX_PRUNE" = "1" ]; then
     buildx_help=
     buildx_help=$("$DOCKER" buildx prune --help 2>&1 || true)
@@ -63,3 +67,8 @@ fi
 run_docker container prune -f --filter "until=$CONTAINER_UNTIL"
 run_docker network prune -f --filter "until=$NETWORK_UNTIL"
 run_docker image prune -af --filter "until=$IMAGE_UNTIL"
+
+if [ "$failures" -ne 0 ]; then
+    echo "One or more Docker cleanup commands failed." >&2
+    exit 1
+fi

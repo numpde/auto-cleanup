@@ -150,10 +150,10 @@ print_next_steps() {
         echo "Quick verification:"
     fi
     echo
-    echo "  systemctl status vps-docker-clean.timer"
-    echo "  systemctl list-timers vps-docker-clean.timer"
+    echo "  sudo systemctl status vps-docker-clean.timer"
+    echo "  sudo systemctl list-timers vps-docker-clean.timer"
     if [ "$SKIP_DOCKER_CONFIG" -eq 0 ]; then
-        echo "  cat /etc/docker/daemon.json"
+        echo "  sudo cat /etc/docker/daemon.json"
     fi
 
     if [ "$SKIP_DOCKER_CONFIG" -eq 0 ] && [ "$RESTART_DOCKER" -eq 0 ]; then
@@ -164,7 +164,7 @@ print_next_steps() {
             echo "For Docker defaults to apply later:"
         fi
         echo
-        echo "  systemctl restart docker"
+        echo "  sudo systemctl restart docker"
         echo "  # then recreate each Compose-managed workload from that workload's Compose project directory:"
         echo "  docker compose up -d --force-recreate"
     fi
@@ -182,22 +182,72 @@ validate_dockerd_config() {
     fi
 }
 
+prepare_dockerd_validation_config() {
+    output_path=$1
+    "$REPO_DIR/lib/merge-docker-daemon.py" \
+        --daemon-json "$DAEMON_JSON" \
+        --policy-json "$REPO_DIR/fixtures/docker/daemon-log-policy.json" \
+        --output-json "$output_path" >/dev/null
+}
+
+prevalidate_docker_config() {
+    [ "$SKIP_DOCKER_CONFIG" -eq 0 ] || return 0
+    [ "$DRY_RUN" -eq 0 ] || return 0
+
+    DOCKER_VALIDATE_TMP=$(mktemp)
+    prepare_dockerd_validation_config "$DOCKER_VALIDATE_TMP"
+    validate_dockerd_config "$DOCKER_VALIDATE_TMP"
+    rm -f "$DOCKER_VALIDATE_TMP"
+    DOCKER_VALIDATE_TMP=
+}
+
+prepare_docker_restart_rollback() {
+    [ "$SKIP_DOCKER_CONFIG" -eq 0 ] || return 0
+    [ "$RESTART_DOCKER" -eq 1 ] || return 0
+    [ "$DRY_RUN" -eq 0 ] || return 0
+
+    DOCKER_ROLLBACK_TMP=$(mktemp)
+    if [ -e "$DAEMON_JSON" ]; then
+        cp -p "$DAEMON_JSON" "$DOCKER_ROLLBACK_TMP"
+        DOCKER_ROLLBACK_HAD_FILE=1
+    else
+        DOCKER_ROLLBACK_HAD_FILE=0
+    fi
+}
+
+restore_docker_config_after_restart_failure() {
+    [ "$SKIP_DOCKER_CONFIG" -eq 0 ] || return 0
+    [ "$RESTART_DOCKER" -eq 1 ] || return 0
+    [ "$DRY_RUN" -eq 0 ] || return 0
+    [ -n "$DOCKER_ROLLBACK_TMP" ] || return 0
+
+    echo "Docker restart failed; restoring previous daemon config." >&2
+    if [ "$DOCKER_ROLLBACK_HAD_FILE" -eq 1 ]; then
+        cp -p "$DOCKER_ROLLBACK_TMP" "$DAEMON_JSON"
+    else
+        rm -f "$DAEMON_JSON"
+    fi
+}
+
 install_file() {
     src=$1
     dst=$2
     mode=$3
     display_src=${4:-$src}
     dst_dir=$(dirname -- "$dst")
+    assert_parent_path_safe "$ROOT" "$dst"
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "would install: $display_src -> $dst mode $mode"
         return
     fi
     run install -d -m 0755 "$dst_dir"
+    assert_parent_path_safe "$ROOT" "$dst"
     run install -m "$mode" "$src" "$dst"
 }
 
 assert_install_destination() {
     path=$1
+    assert_parent_path_safe "$ROOT" "$path"
     if [ -L "$path" ]; then
         echo "refusing to replace symlink: $path" >&2
         exit 1
@@ -261,6 +311,14 @@ if [ "$SKIP_DOCKER_CONFIG" -eq 0 ]; then
         --dry-run >/dev/null
 fi
 
+TMP_SERVICE=
+DOCKER_VALIDATE_TMP=
+DOCKER_ROLLBACK_TMP=
+DOCKER_ROLLBACK_HAD_FILE=0
+trap 'rm -f "$TMP_SERVICE" "$DOCKER_VALIDATE_TMP" "$DOCKER_ROLLBACK_TMP"' EXIT INT TERM
+
+prevalidate_docker_config
+
 assert_install_destination "$BIN_DIR/vps-docker-clean"
 assert_install_destination "$SYSTEMD_DIR/vps-docker-clean.service"
 assert_install_destination "$SYSTEMD_DIR/vps-docker-clean.timer"
@@ -275,7 +333,6 @@ if [ "$SKIP_APT_PERIODIC" -eq 0 ]; then
 fi
 
 TMP_SERVICE=$(mktemp)
-trap 'rm -f "$TMP_SERVICE"' EXIT INT TERM
 sed \
     -e "s|@SBIN_DIR@|$PREFIX/sbin|g" \
     -e "s|@ETC_DIR@|$ETC_DIR|g" \
@@ -327,11 +384,13 @@ if [ "$SKIP_DOCKER_CONFIG" -eq 0 ]; then
         echo "would ensure directory: $DOCKER_DIR mode 0755"
         echo "would merge: $REPO_DIR/fixtures/docker/daemon-log-policy.json -> $DAEMON_JSON"
     else
+        assert_parent_path_safe "$ROOT" "$DAEMON_JSON"
+        prepare_docker_restart_rollback
         install -d -m 0755 "$DOCKER_DIR"
+        assert_parent_path_safe "$ROOT" "$DAEMON_JSON"
         "$REPO_DIR/lib/merge-docker-daemon.py" \
             --daemon-json "$DAEMON_JSON" \
             --policy-json "$REPO_DIR/fixtures/docker/daemon-log-policy.json"
-        validate_dockerd_config "$DAEMON_JSON"
     fi
 fi
 
@@ -357,7 +416,13 @@ if [ "$SYSTEMD_ACTIONS" -eq 1 ] && command -v systemctl >/dev/null 2>&1; then
     fi
     if [ "$SKIP_DOCKER_CONFIG" -eq 0 ]; then
         if [ "$RESTART_DOCKER" -eq 1 ]; then
-            run systemctl restart docker
+            if [ "$DRY_RUN" -eq 1 ]; then
+                run systemctl restart docker
+            elif ! systemctl restart docker; then
+                restore_docker_config_after_restart_failure
+                systemctl restart docker >/dev/null 2>&1 || true
+                exit 1
+            fi
         else
             echo "Docker was not restarted. Restart Docker and recreate containers when convenient."
         fi
