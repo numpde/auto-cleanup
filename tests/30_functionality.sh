@@ -172,7 +172,6 @@ if grep -Eq 'volume prune|--volumes' "$ROOT/usr/local/sbin/vps-docker-clean"; th
     echo "cleanup script must not prune Docker volumes" >&2
     exit 1
 fi
-grep -q 'local Docker daemon is not reachable' "$ROOT/usr/local/sbin/vps-docker-clean"
 
 python3 - "$ROOT/etc/docker/daemon.json" <<'PY'
 import json
@@ -1018,10 +1017,11 @@ grep -q -- 'One or more Docker cleanup commands failed.' "$FAKE_ROOT/docker-fail
 if FAKE_DOCKER_LOG="$FAKE_ROOT/docker-down.log" \
     FAKE_DOCKER_MODE=down \
     DOCKER="$REPO_DIR/tests/fixtures/fake-docker.sh" \
-    "$REPO_DIR/fixtures/bin/vps-docker-clean" >/dev/null 2>&1; then
+    "$REPO_DIR/fixtures/bin/vps-docker-clean" >/dev/null 2>"$FAKE_ROOT/docker-down.err"; then
     echo 'cleanup unexpectedly succeeded while Docker was down' >&2
     exit 1
 fi
+grep -q 'local Docker daemon is not reachable' "$FAKE_ROOT/docker-down.err"
 if PATH="$FAKE_ROOT/empty-path" \
     DOCKER=docker \
     "$REPO_DIR/fixtures/bin/vps-docker-clean" >/dev/null 2>&1; then

@@ -165,6 +165,9 @@ def main():
     if args.cache_gib is not None:
         if re.fullmatch(r"[1-9][0-9]*", args.cache_gib) is None:
             parser.error("--cache-gib must be a positive whole number without leading zeros")
+        # Docker's signed 64-bit byte count must hold the whole-GiB conversion.
+        if len(args.cache_gib) > 10 or int(args.cache_gib) > 8589934591:
+            parser.error("--cache-gib must not exceed 8589934591 GiB")
         builder = daemon.get("builder", {})
         if not isinstance(builder, dict):
             raise SystemExit(f"Cannot configure cache in {daemon_path}: builder must be a JSON object.")

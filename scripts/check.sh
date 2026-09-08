@@ -190,10 +190,13 @@ service_file=$(target "$ETC_DIR/systemd/system/vps-docker-clean.service")
 timer_file=$(target "$ETC_DIR/systemd/system/vps-docker-clean.timer")
 check_file "$service_file"
 if is_plain_file "$service_file"; then
+    # Systemd applies later environment files last; presence alone cannot prove precedence.
+    expected_environment_files=$(printf '%s\n' \
+        "EnvironmentFile=$ETC_DIR/default/vps-docker-clean.policy" \
+        "EnvironmentFile=-$ETC_DIR/default/vps-docker-clean")
     if grep -Fxq "ConditionFileIsExecutable=$PREFIX/sbin/vps-docker-clean" "$service_file" &&
         grep -Fxq "Type=oneshot" "$service_file" &&
-        grep -Fxq "EnvironmentFile=$ETC_DIR/default/vps-docker-clean.policy" "$service_file" &&
-        grep -Fxq "EnvironmentFile=-$ETC_DIR/default/vps-docker-clean" "$service_file" &&
+        [ "$(sed -n '/^EnvironmentFile=/p' "$service_file")" = "$expected_environment_files" ] &&
         grep -Fxq "ExecStart=$PREFIX/sbin/vps-docker-clean" "$service_file" &&
         grep -Fxq "Nice=10" "$service_file" &&
         grep -Fxq "IOSchedulingClass=idle" "$service_file" &&

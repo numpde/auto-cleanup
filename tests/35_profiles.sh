@@ -13,6 +13,18 @@ stage=$scratch/stage
 grep -Fxq PROFILE=vps "$stage/etc/default/vps-docker-clean.policy"
 grep -Fxq OnCalendar=daily "$stage/etc/systemd/system/vps-docker-clean.timer"
 
+# Both files can be present while reversed precedence silently discards overrides.
+service=$stage/etc/systemd/system/vps-docker-clean.service
+cp "$service" "$scratch/service.saved"
+sed -e 's|EnvironmentFile=/etc/default/vps-docker-clean.policy|EnvironmentFile=-/etc/default/vps-docker-clean|; t' \
+    -e 's|EnvironmentFile=-/etc/default/vps-docker-clean$|EnvironmentFile=/etc/default/vps-docker-clean.policy|' \
+    "$scratch/service.saved" > "$service"
+if "$REPO_DIR/scripts/check.sh" --root "$stage" --strict >"$scratch/out" 2>&1; then
+    echo 'reversed environment-file precedence accepted' >&2; exit 1
+fi
+grep -q 'bad.*systemd service' "$scratch/out"
+cp "$scratch/service.saved" "$service"
+
 mkdir -p "$scratch/bin"
 ln -s "$REPO_DIR/tests/fixtures/fake-dockerd.sh" "$scratch/bin/dockerd"
 if FAKE_DOCKERD_LOG="$scratch/old-docker.log" FAKE_DOCKERD_VERSION=27.5.1 \
@@ -22,12 +34,30 @@ fi
 grep -q '28 or newer' "$scratch/out"
 test ! -e "$scratch/old/usr"
 
-for args in '--profile unknown' '--cache-gib 0' '--cache-gib -1' '--cache-gib 1.5'; do
+for args in '--profile unknown' '--cache-gib 0' '--cache-gib -1' '--cache-gib 1.5' \
+    '--cache-gib 8589934592' '--cache-gib 99999999999999999999'; do
     # These fixed test arguments deliberately exercise the CLI's separate words.
     if "$REPO_DIR/scripts/install.sh" --root "$scratch/invalid" $args >"$scratch/out" 2>&1; then
         echo "invalid setting accepted: $args" >&2; exit 1
     fi
     test ! -e "$scratch/invalid"
+done
+
+# The direct merger has the same representability boundary as the installer.
+for budget in 8589934591 8589934592 99999999999999999999; do
+    status=0
+    "$REPO_DIR/lib/merge-docker-daemon.py" \
+        --daemon-json "$scratch/budget.json" \
+        --policy-json "$REPO_DIR/fixtures/docker/daemon-log-policy.json" \
+        --cache-gib "$budget" >"$scratch/out" 2>&1 || status=$?
+    if [ "$budget" = 8589934591 ]; then
+        test "$status" -eq 0
+        cp "$scratch/budget.json" "$scratch/budget.saved"
+    else
+        test "$status" -ne 0
+        grep -q '8589934591' "$scratch/out"
+        cmp "$scratch/budget.saved" "$scratch/budget.json"
+    fi
 done
 
 # A preflight read must reject special files without waiting or installing anything.
@@ -122,6 +152,16 @@ if grep -Eq 'volume|builder|buildx' "$scratch/prune.log"; then
 fi
 "$stage/usr/local/sbin/vps-docker-clean" --show-policy > "$scratch/show"
 grep -Fxq IMAGE_UNTIL=336h "$scratch/show"
+
+for argument in '' --unknown; do
+    if DOCKER="$REPO_DIR/tests/fixtures/fake-docker.sh" \
+        FAKE_DOCKER_LOG="$scratch/invalid-argument.log" \
+        "$stage/usr/local/sbin/vps-docker-clean" "$argument" >"$scratch/out" 2>&1; then
+        echo "invalid cleanup argument accepted: '$argument'" >&2; exit 1
+    fi
+    grep -q 'Usage:' "$scratch/out"
+    test ! -e "$scratch/invalid-argument.log"
+done
 
 if IMAGE_UNTIL=0h DOCKER="$REPO_DIR/tests/fixtures/fake-docker.sh" \
     FAKE_DOCKER_LOG="$scratch/invalid-runtime.log" \

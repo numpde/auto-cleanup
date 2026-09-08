@@ -32,6 +32,11 @@ validate_cache_budget() {
             return 1
             ;;
     esac
+    # Docker stores byte counts in int64; bound the GiB value before conversion.
+    if [ "${#CACHE_GIB}" -gt 10 ] || [ "$CACHE_GIB" -gt 8589934591 ]; then
+        echo "Cannot configure cache budget '$CACHE_GIB'; the maximum is 8589934591 GiB." >&2
+        return 1
+    fi
 }
 
 # Read literal settings into policy globals without evaluating shell syntax.

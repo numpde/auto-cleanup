@@ -137,7 +137,7 @@ Common install switches:
 
 - `--root DIR` stages under another root for tests or image builds.
 - `--profile vps|workstation` selects defaults explicitly.
-- `--cache-gib N` sets a positive whole-GiB cache budget.
+- `--cache-gib N` sets a positive whole-GiB cache budget (maximum 8589934591).
 - `--prefix DIR` changes where the cleanup executable is installed.
 - `--etc-dir DIR` changes the configuration root.
 - `--skip-docker-config` leaves Docker daemon configuration untouched; neither

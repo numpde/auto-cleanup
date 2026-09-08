@@ -20,13 +20,13 @@ for age in "${CONTAINER_UNTIL-}" "${NETWORK_UNTIL-}" "${IMAGE_UNTIL-}"; do
             ;;
     esac
 done
-case "$*" in
-    --show-policy)
+case "$#:${1-}" in
+    1:--show-policy)
         printf '%s\n' "CONTAINER_UNTIL=$CONTAINER_UNTIL" "NETWORK_UNTIL=$NETWORK_UNTIL" "IMAGE_UNTIL=$IMAGE_UNTIL" \
             'Container selector: auto-cleanup.disposable=true' 'Docker endpoint: unix:///var/run/docker.sock'
         exit 0
         ;;
-    '') ;;
+    0:) ;;
     *) echo "Usage: vps-docker-clean [--show-policy]" >&2; exit 2 ;;
 esac
 
