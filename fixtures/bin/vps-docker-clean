@@ -1,70 +1,64 @@
 #!/bin/sh
+# Systemd supplies profile defaults and then operator age overrides. Docker owns
+# reference checks; only explicitly disposable stopped containers may be removed.
 set -eu
 
 DOCKER=${DOCKER:-docker}
-BUILD_CACHE_UNTIL=${BUILD_CACHE_UNTIL:-168h}
-BUILD_CACHE_RESERVED=${BUILD_CACHE_RESERVED:-1GB}
-CONTAINER_UNTIL=${CONTAINER_UNTIL:-168h}
-NETWORK_UNTIL=${NETWORK_UNTIL:-168h}
-IMAGE_UNTIL=${IMAGE_UNTIL:-720h}
-ALLOW_BUILDX_PRUNE=${ALLOW_BUILDX_PRUNE:-0}
+if [ "${BUILD_CACHE_UNTIL+x}${BUILD_CACHE_RESERVED+x}${ALLOW_BUILDX_PRUNE+x}" != "" ]; then
+    echo "Cannot run cleanup with obsolete cache overrides; remove BUILD_CACHE_UNTIL, BUILD_CACHE_RESERVED and ALLOW_BUILDX_PRUNE. Cache is now managed by Docker GC; set its budget with install.sh --cache-gib." >&2
+    exit 2
+fi
+for age in "${CONTAINER_UNTIL-}" "${NETWORK_UNTIL-}" "${IMAGE_UNTIL-}"; do
+    case "$age" in
+        *h) hours=${age%h} ;;
+        *) hours= ;;
+    esac
+    case "$hours" in
+        ''|*[!0-9]*|0*)
+            echo "Cannot run cleanup: CONTAINER_UNTIL, NETWORK_UNTIL and IMAGE_UNTIL must each be positive whole hours (for example 24h); received '$age'." >&2
+            exit 2
+            ;;
+    esac
+done
+case "$*" in
+    --show-policy)
+        printf '%s\n' "CONTAINER_UNTIL=$CONTAINER_UNTIL" "NETWORK_UNTIL=$NETWORK_UNTIL" "IMAGE_UNTIL=$IMAGE_UNTIL" \
+            'Container selector: auto-cleanup.disposable=true' 'Docker endpoint: unix:///var/run/docker.sock'
+        exit 0
+        ;;
+    '') ;;
+    *) echo "Usage: vps-docker-clean [--show-policy]" >&2; exit 2 ;;
+esac
+
+# Cleanup belongs to this host's rootful daemon, never an ambient remote context.
+unset DOCKER_CONTEXT DOCKER_HOST DOCKER_TLS DOCKER_TLS_VERIFY DOCKER_CERT_PATH
 
 if ! command -v "$DOCKER" >/dev/null 2>&1; then
-    echo "Docker CLI not found; skipping cleanup."
-    exit 0
+    echo "Cannot run cleanup: Docker CLI '$DOCKER' was not found." >&2
+    exit 1
 fi
 
-if ! "$DOCKER" info >/dev/null 2>&1; then
-    echo "Docker daemon not reachable; skipping cleanup."
-    exit 0
+if ! "$DOCKER" --host unix:///var/run/docker.sock info >/dev/null; then
+    echo "Cannot run cleanup: the local Docker daemon is not reachable." >&2
+    exit 1
 fi
 
 failures=0
 
+# Record failures and continue other categories; the final exit reports the result.
 run_docker() {
     echo "+ $DOCKER $*"
-    if "$DOCKER" "$@"; then
+    if "$DOCKER" --host unix:///var/run/docker.sock "$@"; then
         return 0
+    else
+        status=$?
     fi
-    status=$?
     failures=1
     echo "Docker command failed ($status): $DOCKER $*" >&2
     return 0
 }
 
-help_has() {
-    printf '%s\n' "$1" | grep -q -- "$2"
-}
-
-builder_help=
-if builder_help=$("$DOCKER" builder prune --help 2>&1); then
-    builder_prune_available=1
-else
-    builder_prune_available=0
-fi
-if help_has "$builder_help" '--keep-storage'; then
-    run_docker builder prune -af \
-        --filter "until=$BUILD_CACHE_UNTIL" \
-        --keep-storage "$BUILD_CACHE_RESERVED"
-elif [ "$ALLOW_BUILDX_PRUNE" = "1" ]; then
-    buildx_help=
-    buildx_help=$("$DOCKER" buildx prune --help 2>&1 || true)
-    if help_has "$buildx_help" '--reserved-space'; then
-        run_docker buildx prune -af \
-            --filter "until=$BUILD_CACHE_UNTIL" \
-            --reserved-space "$BUILD_CACHE_RESERVED"
-    elif [ "$builder_prune_available" -eq 1 ]; then
-        run_docker builder prune -af --filter "until=$BUILD_CACHE_UNTIL"
-    else
-        echo "Docker build-cache prune command not available; skipping build-cache cleanup."
-    fi
-elif [ "$builder_prune_available" -eq 1 ]; then
-    run_docker builder prune -af --filter "until=$BUILD_CACHE_UNTIL"
-else
-    echo "Docker build-cache prune command not available; skipping build-cache cleanup."
-fi
-
-run_docker container prune -f --filter "until=$CONTAINER_UNTIL"
+run_docker container prune -f --filter "until=$CONTAINER_UNTIL" --filter label=auto-cleanup.disposable=true
 run_docker network prune -f --filter "until=$NETWORK_UNTIL"
 run_docker image prune -af --filter "until=$IMAGE_UNTIL"
 

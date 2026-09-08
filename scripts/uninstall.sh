@@ -203,6 +203,7 @@ fi
 remove_file "$BIN_DIR/vps-docker-clean"
 remove_file "$SYSTEMD_DIR/vps-docker-clean.service"
 remove_file "$SYSTEMD_DIR/vps-docker-clean.timer"
+remove_file "$(target "$ETC_DIR/default/vps-docker-clean.policy")"
 if [ "$SKIP_JOURNALD" -eq 0 ]; then
     remove_file "$JOURNALD_DIR/auto-cleanup-limits.conf"
 fi

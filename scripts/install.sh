@@ -1,4 +1,5 @@
 #!/bin/sh
+# Resolve the saved profile before projecting it into systemd and Docker config.
 set -eu
 
 usage() {
@@ -9,8 +10,10 @@ Options:
   --root DIR              Stage files under DIR instead of the real filesystem
   --prefix DIR            Prefix for installed executables (default: /usr/local)
   --etc-dir DIR           Configuration root (default: /etc)
+  --profile NAME          vps (fresh default) or workstation; otherwise keep selection
+  --cache-gib N           Override the profile cache budget in whole GiB
   --dry-run               Print intended actions without installing files
-  --skip-docker-config    Do not merge Docker daemon logging config
+  --skip-docker-config    Leave Docker logging and native cache GC unmanaged
   --skip-journald         Do not install the journald limits fixture
   --skip-btmp-logrotate   Do not install the btmp logrotate fixture
   --skip-apt-periodic     Do not install the APT periodic cleanup fixture
@@ -32,9 +35,19 @@ SYSTEMD_ACTIONS=1
 SKIP_BTMP_LOGROTATE=0
 SKIP_APT_PERIODIC=0
 SKIP_JOURNALD=0
+REQUESTED_PROFILE=
+REQUESTED_CACHE_GIB=
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
+        --profile)
+            REQUESTED_PROFILE=${2:?--profile requires vps or workstation}
+            shift 2
+            ;;
+        --cache-gib)
+            REQUESTED_CACHE_GIB=${2:?--cache-gib requires a positive integer}
+            shift 2
+            ;;
         --root)
             ROOT=${2:?--root requires a directory}
             shift 2
@@ -99,6 +112,11 @@ if [ ! -f "$COMMON_SH" ]; then
     exit 1
 fi
 . "$COMMON_SH"
+if [ ! -f "$SCRIPT_DIR/lib/policy.sh" ]; then
+    echo "missing support file: $SCRIPT_DIR/lib/policy.sh" >&2
+    exit 1
+fi
+. "$SCRIPT_DIR/lib/policy.sh"
 
 PREFIX=$(trim_trailing_slashes "$PREFIX")
 ETC_DIR=$(trim_trailing_slashes "$ETC_DIR")
@@ -187,6 +205,7 @@ prepare_dockerd_validation_config() {
     "$REPO_DIR/lib/merge-docker-daemon.py" \
         --daemon-json "$DAEMON_JSON" \
         --policy-json "$REPO_DIR/fixtures/docker/daemon-log-policy.json" \
+        --cache-gib "$CACHE_GIB" \
         --output-json "$output_path" >/dev/null
 }
 
@@ -282,11 +301,48 @@ LOGROTATE_DIR=$(target "$ETC_DIR/logrotate.d")
 APT_CONF_DIR=$(target "$ETC_DIR/apt/apt.conf.d")
 DOCKER_DIR=$(target "$ETC_DIR/docker")
 DAEMON_JSON="$DOCKER_DIR/daemon.json"
+MANAGED_POLICY=$(target "$ETC_DIR/default/vps-docker-clean.policy")
+
+assert_install_destination "$MANAGED_POLICY"
+PROFILE=vps
+saved_cache=
+if [ -f "$MANAGED_POLICY" ]; then
+    read_managed_policy "$MANAGED_POLICY"
+    saved_cache=$CACHE_GIB
+fi
+if [ -n "$REQUESTED_PROFILE" ]; then
+    PROFILE=$REQUESTED_PROFILE
+    saved_cache=
+fi
+profile_defaults
+CACHE_GIB=${REQUESTED_CACHE_GIB:-${saved_cache:-$CACHE_GIB}}
+validate_cache_budget
+echo "Managed cleanup policy (operator age overrides may differ):"
+print_managed_policy
+echo "Operator overrides are preserved at $ETC_DIR/default/vps-docker-clean."
+override_file=$(target "$ETC_DIR/default/vps-docker-clean")
+if [ -e "$override_file" ] || [ -L "$override_file" ]; then
+    if [ ! -f "$override_file" ] || [ ! -r "$override_file" ]; then
+        echo "Cannot inspect cleanup overrides: $override_file must be a readable regular file." >&2
+        exit 1
+    fi
+    override_status=0
+    grep -Eq '^[[:space:]]*(BUILD_CACHE_UNTIL|BUILD_CACHE_RESERVED|ALLOW_BUILDX_PRUNE)[[:space:]]*=' "$override_file" || override_status=$?
+    case "$override_status" in
+        0)
+            echo "Cannot install cleanup: $override_file contains obsolete cache overrides. Remove BUILD_CACHE_UNTIL, BUILD_CACHE_RESERVED and ALLOW_BUILDX_PRUNE; use --cache-gib for the native GC budget." >&2
+            exit 1
+            ;;
+        1) ;;
+        *) echo "Cannot inspect cleanup overrides at $override_file (grep exited $override_status)." >&2; exit 1 ;;
+    esac
+fi
 
 require_file "$REPO_DIR/fixtures/bin/vps-docker-clean"
 require_file "$REPO_DIR/fixtures/systemd/vps-docker-clean.service"
 require_file "$REPO_DIR/fixtures/systemd/vps-docker-clean.timer"
 if [ "$SKIP_DOCKER_CONFIG" -eq 0 ]; then
+    require_gc_capability
     require_executable "$REPO_DIR/lib/merge-docker-daemon.py"
     require_file "$REPO_DIR/fixtures/docker/daemon-log-policy.json"
 fi
@@ -308,14 +364,17 @@ if [ "$SKIP_DOCKER_CONFIG" -eq 0 ]; then
     "$REPO_DIR/lib/merge-docker-daemon.py" \
         --daemon-json "$DAEMON_JSON" \
         --policy-json "$REPO_DIR/fixtures/docker/daemon-log-policy.json" \
+        --cache-gib "$CACHE_GIB" \
         --dry-run >/dev/null
 fi
 
 TMP_SERVICE=
+TMP_TIMER=
+TMP_POLICY=
 DOCKER_VALIDATE_TMP=
 DOCKER_ROLLBACK_TMP=
 DOCKER_ROLLBACK_HAD_FILE=0
-trap 'rm -f "$TMP_SERVICE" "$DOCKER_VALIDATE_TMP" "$DOCKER_ROLLBACK_TMP"' EXIT INT TERM
+trap 'rm -f "$TMP_SERVICE" "$TMP_TIMER" "$TMP_POLICY" "$DOCKER_VALIDATE_TMP" "$DOCKER_ROLLBACK_TMP"' EXIT INT TERM
 
 prevalidate_docker_config
 
@@ -341,17 +400,22 @@ if grep -q '@[A-Z_][A-Z_]*@' "$TMP_SERVICE"; then
     echo "unresolved placeholder in rendered systemd service" >&2
     exit 1
 fi
+TMP_TIMER=$(mktemp)
+sed "s|@SCHEDULE@|$SCHEDULE|g" "$REPO_DIR/fixtures/systemd/vps-docker-clean.timer" > "$TMP_TIMER"
+TMP_POLICY=$(mktemp)
+print_managed_policy > "$TMP_POLICY"
 
 install_file "$REPO_DIR/fixtures/bin/vps-docker-clean" "$BIN_DIR/vps-docker-clean" 0755
+install_file "$TMP_POLICY" "$MANAGED_POLICY" 0644 'managed profile settings'
 install_file \
     "$TMP_SERVICE" \
     "$SYSTEMD_DIR/vps-docker-clean.service" \
     0644 \
     "$REPO_DIR/fixtures/systemd/vps-docker-clean.service (rendered)"
 install_file \
-    "$REPO_DIR/fixtures/systemd/vps-docker-clean.timer" \
+    "$TMP_TIMER" \
     "$SYSTEMD_DIR/vps-docker-clean.timer" \
-    0644
+    0644 'profile timer (rendered)'
 if [ "$SKIP_JOURNALD" -eq 0 ]; then
     install_file \
         "$REPO_DIR/fixtures/journald/limits.conf" \
@@ -390,7 +454,8 @@ if [ "$SKIP_DOCKER_CONFIG" -eq 0 ]; then
         assert_parent_path_safe "$ROOT" "$DAEMON_JSON"
         "$REPO_DIR/lib/merge-docker-daemon.py" \
             --daemon-json "$DAEMON_JSON" \
-            --policy-json "$REPO_DIR/fixtures/docker/daemon-log-policy.json"
+            --policy-json "$REPO_DIR/fixtures/docker/daemon-log-policy.json" \
+            --cache-gib "$CACHE_GIB"
     fi
 fi
 
@@ -399,11 +464,12 @@ if [ "$DRY_RUN" -eq 0 ]; then
 fi
 if [ "$SKIP_DOCKER_CONFIG" -eq 0 ]; then
     if [ "$DRY_RUN" -eq 1 ]; then
-        echo "Docker daemon logging config would be checked/updated at $DAEMON_JSON."
+        echo "Docker logging and cache GC config would be checked/updated at $DAEMON_JSON."
     else
-        echo "Docker daemon logging config was checked/updated at $DAEMON_JSON."
+        echo "Docker logging and cache GC config was checked/updated at $DAEMON_JSON."
     fi
     echo "Existing containers must be recreated before they use daemon-level logging changes."
+    echo "Docker must restart to activate the cache GC budget and new logging defaults."
 fi
 
 if [ "$SYSTEMD_ACTIONS" -eq 1 ] && command -v systemctl >/dev/null 2>&1; then
@@ -424,7 +490,7 @@ if [ "$SYSTEMD_ACTIONS" -eq 1 ] && command -v systemctl >/dev/null 2>&1; then
                 exit 1
             fi
         else
-            echo "Docker was not restarted. Restart Docker and recreate containers when convenient."
+            echo "Docker was not restarted: the new cache budget and logging defaults are not activated by this install."
         fi
     fi
 else

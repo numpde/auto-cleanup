@@ -53,13 +53,14 @@ for script in install check uninstall; do
 done
 mkdir -p "$PARTIAL_REPO/scripts/lib"
 cp "$REPO_DIR/scripts/lib/common.sh" "$PARTIAL_REPO/scripts/lib/common.sh"
+cp "$REPO_DIR/scripts/lib/policy.sh" "$PARTIAL_REPO/scripts/lib/policy.sh"
 if /bin/sh "$PARTIAL_REPO/scripts/install.sh" --dry-run --skip-docker-config >/dev/null 2>"$MERGE_ROOT/partial-repo.err"; then
     echo "partial checkout install with missing fixtures unexpectedly succeeded" >&2
     exit 1
 fi
 grep -q 'missing source file:' "$MERGE_ROOT/partial-repo.err"
 mkdir -p "$PARTIAL_REPO/fixtures"
-for fixture_dir in bin systemd journald logrotate apt docker; do
+for fixture_dir in bin systemd journald logrotate apt docker default; do
     cp -R "$REPO_DIR/fixtures/$fixture_dir" "$PARTIAL_REPO/fixtures/$fixture_dir"
 done
 if /bin/sh "$PARTIAL_REPO/scripts/install.sh" --dry-run >/dev/null 2>"$MERGE_ROOT/partial-repo.err"; then
@@ -75,6 +76,7 @@ grep -q 'missing source file:' "$MERGE_ROOT/partial-repo.err"
 find "$ROOT" -type f -printf '%P\n' | sort > "$MERGE_ROOT/default-file-set.actual"
 cat > "$MERGE_ROOT/default-file-set.expected" <<'EOF'
 etc/apt/apt.conf.d/90auto-cleanup-periodic
+etc/default/vps-docker-clean.policy
 etc/docker/daemon.json
 etc/logrotate.d/auto-cleanup-btmp
 etc/systemd/journald.conf.d/auto-cleanup-limits.conf
@@ -92,7 +94,7 @@ backup_count_before=$(find "$ROOT/etc/docker" -name 'daemon.json.auto-cleanup.ba
 backup_count_after=$(find "$ROOT/etc/docker" -name 'daemon.json.auto-cleanup.bak.*' | wc -l)
 test "$backup_count_before" = "$backup_count_after"
 mkdir -p "$FAKE_ROOT/no-python-bin"
-for cmd in grep dirname df systemctl docker mktemp sed install rm; do
+for cmd in grep dirname df systemctl docker mktemp sed install rm cat; do
     if command -v "$cmd" >/dev/null 2>&1; then
         ln -s "$(command -v "$cmd")" "$FAKE_ROOT/no-python-bin/$cmd"
     fi
@@ -113,7 +115,7 @@ PATH="$FAKE_ROOT/no-python-bin" "$REPO_DIR/scripts/install.sh" \
     --skip-apt-periodic >/dev/null
 
 mkdir -p "$FAKE_ROOT/dockerd-bin"
-for cmd in awk dirname grep python3; do
+for cmd in awk dirname grep python3 cat sed; do
     if command -v "$cmd" >/dev/null 2>&1; then
         ln -s "$(command -v "$cmd")" "$FAKE_ROOT/dockerd-bin/$cmd"
     fi
@@ -170,7 +172,7 @@ if grep -Eq 'volume prune|--volumes' "$ROOT/usr/local/sbin/vps-docker-clean"; th
     echo "cleanup script must not prune Docker volumes" >&2
     exit 1
 fi
-grep -q 'Docker daemon not reachable; skipping cleanup.' "$ROOT/usr/local/sbin/vps-docker-clean"
+grep -q 'local Docker daemon is not reachable' "$ROOT/usr/local/sbin/vps-docker-clean"
 
 python3 - "$ROOT/etc/docker/daemon.json" <<'PY'
 import json
@@ -900,7 +902,7 @@ if "$REPO_DIR/scripts/check.sh" --root "$DRIFT_ROOT" --strict >/dev/null 2>&1; t
 fi
 rm -rf "$DRIFT_ROOT/usr/local/sbin/vps-docker-clean"
 "$REPO_DIR/scripts/install.sh" --root "$DRIFT_ROOT" >/dev/null
-sed -i 's/OnCalendar=weekly/OnCalendar=daily/' "$DRIFT_ROOT/etc/systemd/system/vps-docker-clean.timer"
+sed -i 's/OnCalendar=daily/OnCalendar=weekly/' "$DRIFT_ROOT/etc/systemd/system/vps-docker-clean.timer"
 if "$REPO_DIR/scripts/check.sh" --root "$DRIFT_ROOT" --strict >/dev/null 2>&1; then
     echo "check unexpectedly accepted drifted systemd timer policy" >&2
     exit 1
@@ -980,21 +982,17 @@ if "$REPO_DIR/scripts/uninstall.sh" \
 fi
 
 FAKE_DOCKER_LOG="$FAKE_ROOT/docker.log" \
-    FAKE_DOCKER_MODE=buildx-reserved \
-    BUILD_CACHE_UNTIL=24h \
-    BUILD_CACHE_RESERVED=512MB \
     CONTAINER_UNTIL=48h \
     NETWORK_UNTIL=72h \
     IMAGE_UNTIL=1440h \
     DOCKER="$REPO_DIR/tests/fixtures/fake-docker.sh" \
     "$REPO_DIR/fixtures/bin/vps-docker-clean" >/dev/null
 
-grep -q -- 'builder prune -af --filter until=24h' "$FAKE_ROOT/docker.log"
-if grep -q -- 'buildx prune' "$FAKE_ROOT/docker.log"; then
-    echo "cleanup script used buildx without ALLOW_BUILDX_PRUNE=1" >&2
+if grep -Eq -- 'builder|buildx' "$FAKE_ROOT/docker.log"; then
+    echo "scheduled cleanup must leave cache management to native GC" >&2
     exit 1
 fi
-grep -q -- 'container prune -f --filter until=48h' "$FAKE_ROOT/docker.log"
+grep -q -- 'container prune -f --filter until=48h --filter label=auto-cleanup.disposable=true' "$FAKE_ROOT/docker.log"
 grep -q -- 'network prune -f --filter until=72h' "$FAKE_ROOT/docker.log"
 grep -q -- 'image prune -af --filter until=1440h' "$FAKE_ROOT/docker.log"
 if grep -Eq 'volume prune|--volumes' "$FAKE_ROOT/docker.log"; then
@@ -1002,41 +1000,7 @@ if grep -Eq 'volume prune|--volumes' "$FAKE_ROOT/docker.log"; then
     exit 1
 fi
 
-FAKE_DOCKER_LOG="$FAKE_ROOT/docker-buildx-opt-in.log" \
-    FAKE_DOCKER_MODE=buildx-reserved \
-    ALLOW_BUILDX_PRUNE=1 \
-    BUILD_CACHE_UNTIL=24h \
-    BUILD_CACHE_RESERVED=512MB \
-    DOCKER="$REPO_DIR/tests/fixtures/fake-docker.sh" \
-    "$REPO_DIR/fixtures/bin/vps-docker-clean" >/dev/null
-grep -q -- 'buildx prune -af --filter until=24h --reserved-space 512MB' \
-    "$FAKE_ROOT/docker-buildx-opt-in.log"
-
-FAKE_DOCKER_LOG="$FAKE_ROOT/docker-classic.log" \
-    FAKE_DOCKER_MODE=classic-keep \
-    DOCKER="$REPO_DIR/tests/fixtures/fake-docker.sh" \
-    "$REPO_DIR/fixtures/bin/vps-docker-clean" >/dev/null
-grep -q -- '--keep-storage 1GB' "$FAKE_ROOT/docker-classic.log"
-
-FAKE_DOCKER_LOG="$FAKE_ROOT/docker-fallback.log" \
-    FAKE_DOCKER_MODE=fallback \
-    DOCKER="$REPO_DIR/tests/fixtures/fake-docker.sh" \
-    "$REPO_DIR/fixtures/bin/vps-docker-clean" >/dev/null
-grep -q -- 'builder prune -af --filter until=168h' "$FAKE_ROOT/docker-fallback.log"
-if grep -Eq -- '--keep-storage|--reserved-space' "$FAKE_ROOT/docker-fallback.log"; then
-    echo "fallback builder prune unexpectedly used a storage flag" >&2
-    exit 1
-fi
-
-FAKE_DOCKER_LOG="$FAKE_ROOT/docker-no-builder.log" \
-    FAKE_DOCKER_MODE=no-builder \
-    DOCKER="$REPO_DIR/tests/fixtures/fake-docker.sh" \
-    "$REPO_DIR/fixtures/bin/vps-docker-clean" >/dev/null
-if grep -q -- 'builder prune -af' "$FAKE_ROOT/docker-no-builder.log"; then
-    echo "missing builder prune command unexpectedly ran build-cache prune" >&2
-    exit 1
-fi
-grep -q -- 'container prune -f --filter until=168h' "$FAKE_ROOT/docker-no-builder.log"
+export CONTAINER_UNTIL=24h NETWORK_UNTIL=24h IMAGE_UNTIL=24h
 
 if FAKE_DOCKER_LOG="$FAKE_ROOT/docker-fail-container.log" \
     FAKE_DOCKER_MODE=fail-container-prune \
@@ -1045,18 +1009,25 @@ if FAKE_DOCKER_LOG="$FAKE_ROOT/docker-fail-container.log" \
     echo "cleanup unexpectedly succeeded after a prune failure" >&2
     exit 1
 fi
-grep -q -- 'container prune -f --filter until=168h' "$FAKE_ROOT/docker-fail-container.log"
-grep -q -- 'network prune -f --filter until=168h' "$FAKE_ROOT/docker-fail-container.log"
-grep -q -- 'image prune -af --filter until=720h' "$FAKE_ROOT/docker-fail-container.log"
+grep -q -- 'container prune -f --filter until=24h' "$FAKE_ROOT/docker-fail-container.log"
+grep -q -- 'network prune -f --filter until=24h' "$FAKE_ROOT/docker-fail-container.log"
+grep -q -- 'image prune -af --filter until=24h' "$FAKE_ROOT/docker-fail-container.log"
+grep -q -- 'Docker command failed (42)' "$FAKE_ROOT/docker-fail-container.err"
 grep -q -- 'One or more Docker cleanup commands failed.' "$FAKE_ROOT/docker-fail-container.err"
 
-FAKE_DOCKER_LOG="$FAKE_ROOT/docker-down.log" \
+if FAKE_DOCKER_LOG="$FAKE_ROOT/docker-down.log" \
     FAKE_DOCKER_MODE=down \
     DOCKER="$REPO_DIR/tests/fixtures/fake-docker.sh" \
-    "$REPO_DIR/fixtures/bin/vps-docker-clean" >/dev/null
-PATH="$FAKE_ROOT/empty-path" \
+    "$REPO_DIR/fixtures/bin/vps-docker-clean" >/dev/null 2>&1; then
+    echo 'cleanup unexpectedly succeeded while Docker was down' >&2
+    exit 1
+fi
+if PATH="$FAKE_ROOT/empty-path" \
     DOCKER=docker \
-    "$REPO_DIR/fixtures/bin/vps-docker-clean" >/dev/null
+    "$REPO_DIR/fixtures/bin/vps-docker-clean" >/dev/null 2>&1; then
+    echo 'cleanup unexpectedly succeeded without Docker' >&2
+    exit 1
+fi
 
 mkdir -p "$FAKE_ROOT/mode/etc/docker"
 cat > "$FAKE_ROOT/mode/etc/docker/daemon.json" <<'EOF'

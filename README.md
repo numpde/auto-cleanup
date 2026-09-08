@@ -1,14 +1,15 @@
 # auto-cleanup
 
-Conservative VPS disk cleanup policy, packaged as installable fixtures and
-scripts.
+Docker disk cleanup profiles for a small VPS or a development workstation.
+Requires Docker Engine 28 or newer for managed native build-cache GC.
 
 Use this repo when you want predictable limits for common disk-growth sources
 without installing broad cleanup jobs that might remove data you still care
 about. The installer writes only the files needed for:
 
 - Docker log caps through `/etc/docker/daemon.json`
-- Weekly safe Docker pruning through a systemd timer
+- Profile-based Docker pruning through a systemd timer
+- Native BuildKit cache budgets for the local Docker builder
 - journald size/retention limits
 - size-based `/var/log/btmp` rotation
 - APT periodic cleanup
@@ -18,14 +19,35 @@ volumes can hold application data, so they are left for an operator to prune
 manually. Temporary directories are already handled by the distro's
 `systemd-tmpfiles-clean.timer` on systemd hosts.
 
-Default installed policy:
+Choose `vps` to prioritize disk space or `workstation` to retain more build
+cache. A fresh install defaults to `vps`; reinstalling without `--profile`
+preserves the saved selection and cache budget. An explicit `--profile` applies
+that profile's defaults, with `--cache-gib N` taking precedence for the budget.
+
+| Docker policy | `vps` (default) | `workstation` |
+| --- | --- | --- |
+| Native build-cache budget | 1 GiB | 40 GiB |
+| Scheduled pruning | Daily | Weekly |
+| Unreferenced images, including tagged images | Created over 24 hours ago | Created over 14 days ago |
+| Disposable stopped containers | Created over 24 hours ago | Created over 7 days ago |
+| Unreferenced networks | Created over 24 hours ago | Created over 7 days ago |
+
+Only containers carrying the label `auto-cleanup.disposable=true` are eligible.
+Apply it only to containers whose writable files and logs may be deleted, for
+example disposable test tasks. Ordinary service containers are preserved,
+including when stopped or failed. Volumes are never pruned.
+
+Image age is **creation age**, not time since last use or download. An image
+used daily with `docker run --rm` can be pruned between runs. Tags and Compose
+files do not protect an image; an existing container reference does. Removing
+a disposable container can make its image eligible in the same cleanup run.
+Pruned images may need to be downloaded or rebuilt, including rollback images.
+
+Shared policy:
 
 | Area | Default |
 | --- | --- |
 | Docker logs | `local` driver, `10m` x `3`, compressed |
-| Docker build cache | prune older than `168h`; reserve `1GB` when the selected CLI supports a local-builder reserve flag |
-| Docker containers/networks | prune unused older than `168h` |
-| Docker images | prune unused older than `720h` |
 | journald | `SystemMaxUse=300M`, `SystemKeepFree=1G`, `MaxRetentionSec=14day` |
 | btmp | rotate at `50M`, keep 1 rotated file |
 | APT cache | autoclean every 7 days, clean every 30 days |
@@ -48,6 +70,7 @@ is enabled:
 
 ```sh
 ./scripts/install.sh --dry-run
+./scripts/install.sh --profile workstation --dry-run
 ```
 
 For a file-tree preview that does not touch the host, use the staged install
@@ -57,6 +80,10 @@ Install on a VPS:
 
 ```sh
 sudo ./scripts/install.sh
+# Or select the workstation defaults:
+sudo ./scripts/install.sh --profile workstation
+# Override the selected profile's cache budget:
+sudo ./scripts/install.sh --cache-gib 8
 ```
 
 You can run `--dry-run` and `--root` without sudo. Repository tests are
@@ -68,6 +95,7 @@ By default, a real install writes to these Linux locations:
 
 - `/usr/local/sbin/vps-docker-clean`
 - `/etc/systemd/system/vps-docker-clean.{service,timer}`
+- `/etc/default/vps-docker-clean.policy` (generated profile settings)
 - `/etc/systemd/journald.conf.d/auto-cleanup-limits.conf`
 - `/etc/logrotate.d/auto-cleanup-btmp`, only when no active-looking existing
   size-based btmp policy is found
@@ -82,7 +110,10 @@ journald fixture was installed. Docker is restarted only when you pass
 containers to be interrupted according to your Docker/systemd restart policy.
 
 The Docker daemon config is merged as JSON and backed up before modification.
-Unrelated daemon keys are preserved, while `log-driver` and `log-opts` are
+Unrelated daemon and `builder` keys are preserved. The complete `builder.gc`
+section is replaced with an enabled, size-based rule using the selected budget
+and zero reserved cache. Existing custom GC rules are replaced deliberately.
+`log-driver` and `log-opts` are
 replaced by the exact repo policy: `local` with `max-size=10m`,
 `max-file=3`, and `compress=true`. Existing file mode and ownership are
 preserved when `daemon.json` is rewritten. Existing containers must still be
@@ -105,9 +136,12 @@ directories are symlinks. Move or resolve those manually before installing.
 Common install switches:
 
 - `--root DIR` stages under another root for tests or image builds.
+- `--profile vps|workstation` selects defaults explicitly.
+- `--cache-gib N` sets a positive whole-GiB cache budget.
 - `--prefix DIR` changes where the cleanup executable is installed.
 - `--etc-dir DIR` changes the configuration root.
-- `--skip-docker-config` leaves Docker daemon configuration untouched.
+- `--skip-docker-config` leaves Docker daemon configuration untouched; neither
+  cache GC nor logging is managed by this installation.
 - `--skip-journald` leaves journald configuration untouched.
 - `--skip-btmp-logrotate` leaves btmp rotation untouched.
 - `--skip-apt-periodic` leaves APT periodic cleanup untouched.
@@ -135,9 +169,10 @@ Docker daemon JSON management is enabled.
 At runtime, the installed policy assumes a systemd-based host with logrotate
 and the distro's APT periodic timer machinery available.
 
-After install, restart Docker when convenient unless you deliberately used
-`--restart-docker`. Existing containers must then be recreated before they use
-the new daemon logging defaults. For Compose-managed workloads, run the Compose
+After install, restart Docker unless you used `--restart-docker`. This activates
+the native cache budget and new logging defaults. Existing containers must
+additionally be recreated to adopt the logging defaults; recreation is not
+needed for cache GC. For Compose-managed workloads, run the Compose
 command from each workload's own Compose project directory:
 
 ```sh
@@ -176,7 +211,9 @@ Useful uninstall switches:
 As with install, uninstall skips service actions automatically with `--root` or
 a custom `--etc-dir`.
 
-Uninstall removes the files installed by this repo and disables the timer. It
+Uninstall removes the files installed by this repo, including the generated
+`.policy` file, and disables the timer. It preserves the operator-owned
+`/etc/default/vps-docker-clean` override file. It
 does not edit `/etc/docker/daemon.json` by default because that file may contain
 unrelated daemon configuration. The install script creates timestamped backups
 beside the daemon file, preserving file mode and ownership, named like:
@@ -240,31 +277,36 @@ positive cleanup interval such as `AutocleanInterval "7";` or
 If you intentionally manage APT cleanup elsewhere, either set an active cleanup
 interval there or install with `--skip-apt-periodic`.
 
-The Docker cleanup script checks which builder-cache retention command the
-local Docker CLI supports. Classic `docker builder prune` uses
-`--keep-storage`; newer builder/Buildx prune commands may advertise
-`--reserved-space`. The default path stays on `docker builder prune` so cleanup
-targets the local Docker builder cache. If neither builder storage-reservation
-flag is advertised, the script still prunes old local build cache but skips the
-reservation flag. This means the build-cache age policy is still applied, but
-the `BUILD_CACHE_RESERVED` floor is not enforceable on that Docker CLI.
-`docker buildx prune` is used only when
-`ALLOW_BUILDX_PRUNE=1` is set, because Buildx prunes the selected builder,
-which may be remote, shared, or otherwise different from the local builder. If
-no supported build-cache prune command is available, it skips build-cache
-cleanup and continues with the other safe Docker prune steps.
+Docker's native garbage collector manages cache periodically during builder
+operation, independently of the image/container/network timer. It can reclaim
+recent unused cache when the budget is exceeded; there is no seven-day age
+exemption. The budget is a GC target, not a disk quota. In-use cache and retained
+image layers can prevent immediate recovery of space.
+
+This installation manages the default `docker` builder and the rootful local
+daemon at `unix:///var/run/docker.sock`. It does not manage custom Buildx
+builders, remote engines, or rootless Docker. Scheduled pruning explicitly
+selects that local socket, ignoring ambient Docker host/context/TLS settings.
+Docker Engine 28+ is required because older engines may silently ignore the
+cache maximum. A real managed-Docker install requires a qualifying `dockerd`
+binary; a staged install without it reports the target requirement.
+
+No cleanup policy guarantees a disk will never fill. Database contents, uploads,
+other application data and non-Docker files need their own limits and disk
+monitoring. This repository does not install a disk alerting service.
 
 Individual prune command failures are reported, but the cleanup script still
 attempts the remaining safe prune categories before exiting nonzero. That keeps
 one failed cleanup area from preventing the rest of the scheduled cleanup.
 
-If the Docker CLI is missing or the Docker daemon is not reachable, the cleanup
-script exits successfully without pruning. That avoids noisy timer failures on
-hosts where Docker is temporarily stopped or not installed.
+If the Docker CLI is missing or the local daemon is unreachable, the cleanup
+script exits nonzero so systemd records the failed cleanup.
 
-The systemd timer uses `OnCalendar=weekly`, which systemd normalizes to Monday
-00:00 local time, adds up to one hour of randomized delay, and allows
-coalescing within `AccuracySec=1h`.
+The timer uses the profile's daily or weekly schedule, adds up to one hour of
+randomized delay, and allows coalescing within `AccuracySec=1h`. Its persistent
+timer can catch up a missed run when enabled; installation can therefore lead
+to pruning soon after the timer starts. Use `--no-enable-timer` to install
+without enabling it on a fresh host. It does not stop an already active timer.
 
 The installed cleanup script accepts these optional environment overrides.
 `DOCKER` must be an executable name or path, not a command line with arguments.
@@ -272,33 +314,55 @@ The override file is loaded by systemd as an `EnvironmentFile`; it is not a
 shell script, and shell expansions or extra command arguments are not evaluated.
 
 - `DOCKER`, default `docker`
-- `BUILD_CACHE_UNTIL`, default `168h`
-- `BUILD_CACHE_RESERVED`, default `1GB`
-- `CONTAINER_UNTIL`, default `168h`
-- `NETWORK_UNTIL`, default `168h`
-- `IMAGE_UNTIL`, default `720h`
-- `ALLOW_BUILDX_PRUNE`, default `0`; set to `1` only when the selected Buildx
-  builder is safe for this timer to prune
+- `CONTAINER_UNTIL`, profile default
+- `NETWORK_UNTIL`, profile default
+- `IMAGE_UNTIL`, profile default
+
+Age overrides must be positive whole hours, such as `48h`. Systemd reads the
+generated `.policy` file first and the operator override file second. Do not
+edit the generated file or override profile/cache fields through the runtime
+environment: use the installer options. The removed `BUILD_CACHE_UNTIL`,
+`BUILD_CACHE_RESERVED`, and `ALLOW_BUILDX_PRUNE` settings are rejected; remove
+them from an existing override file before upgrading.
 
 For timer runs, place overrides in `/etc/default/vps-docker-clean`, for example:
 
 ```sh
-BUILD_CACHE_RESERVED=2GB
-IMAGE_UNTIL=1440h
+IMAGE_UNTIL=168h
 ```
 
 See `fixtures/default/vps-docker-clean.example` for a commented template.
 
-The installer does not create this override file unless you install one
-manually.
+The installer preserves an existing override file and does not create one.
+
+Installation and `check.sh` display managed defaults, not evaluated operator
+overrides or proof of the running daemon's configuration. To inspect the two
+installed environment files through systemd without pruning, use this command
+for the default installation paths:
+
+```sh
+sudo systemd-run --wait --pipe --collect \
+  -p EnvironmentFile=/etc/default/vps-docker-clean.policy \
+  -p EnvironmentFile=-/etc/default/vps-docker-clean \
+  /usr/local/sbin/vps-docker-clean --show-policy
+```
+
+This creates a temporary service that prints the effective ages and container
+selector without contacting Docker. It reads the managed file and then the
+operator override file, but does not inherit custom drop-ins on the cleanup
+service. Adjust paths for a custom installation. Direct `--show-policy` execution
+also works when the three age variables are explicitly supplied.
+
+To run the installed cleanup service, use
+`sudo systemctl start vps-docker-clean.service`; this performs pruning.
 
 Primary references:
 
 - Docker prune behavior: <https://docs.docker.com/engine/manage-resources/pruning/>
 - Docker logging driver configuration: <https://docs.docker.com/engine/logging/configure/>
 - Docker local logging driver options: <https://docs.docker.com/engine/logging/drivers/local/>
-- Classic builder prune flags: <https://docs.docker.com/reference/cli/docker/builder/prune/>
-- Buildx prune flags: <https://docs.docker.com/reference/cli/docker/buildx/prune/>
+- BuildKit GC: <https://docs.docker.com/build/cache/garbage-collection/>
+- Docker 28 GC fields: <https://github.com/moby/moby/blob/v28.0.0/daemon/config/builder.go>
 - journald limits: `man journald.conf`
 - logrotate `maxsize`: `man logrotate.conf`
 - systemd timer calendar syntax: `man systemd.time`

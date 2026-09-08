@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
+"""Merge owned logging and optional native GC settings, preserving other daemon keys."""
 import argparse
 import json
 import os
 import pathlib
+import re
 import shutil
 import sys
 import tempfile
@@ -127,9 +129,11 @@ def reject_symlink_parents(path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Merge Docker daemon log policy")
+    parser = argparse.ArgumentParser(description="Merge Docker daemon logging and cache policy")
     parser.add_argument("--daemon-json", required=True)
     parser.add_argument("--policy-json", required=True)
+    parser.add_argument("--cache-gib", help="native GC maximum, in positive whole GiB; requires Docker 28+")
+    parser.add_argument("--check", action="store_true", help="check policy without writing files")
     parser.add_argument(
         "--output-json",
         help="write the merged daemon JSON to this path without updating daemon-json",
@@ -158,6 +162,22 @@ def main():
     validate_policy(policy, policy_path)
     merged = dict(daemon)
     merged.update(policy)
+    if args.cache_gib is not None:
+        if re.fullmatch(r"[1-9][0-9]*", args.cache_gib) is None:
+            parser.error("--cache-gib must be a positive whole number without leading zeros")
+        builder = daemon.get("builder", {})
+        if not isinstance(builder, dict):
+            raise SystemExit(f"Cannot configure cache in {daemon_path}: builder must be a JSON object.")
+        # Replace custom GC rules: retaining them could defeat the selected budget.
+        merged["builder"] = dict(builder, gc={
+            "enabled": True,
+            "policy": [{"all": True, "reservedSpace": "0", "maxUsedSpace": args.cache_gib + "GB"}],
+        })
+
+    if args.check:
+        if merged != daemon:
+            raise SystemExit(f"Docker logging or cache policy differs from the installed settings: {daemon_path}")
+        return 0
 
     output = json.dumps(merged, indent=2, sort_keys=True) + "\n"
     if args.output_json is not None:

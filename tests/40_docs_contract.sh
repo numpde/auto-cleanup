@@ -17,9 +17,8 @@ fi
 grep -q 'container-only; use `make test`' "$readme"
 
 grep -q '| Docker logs | `local` driver, `10m` x `3`, compressed |' "$readme"
-grep -q '| Docker build cache | prune older than `168h`; reserve `1GB` when the selected CLI supports a local-builder reserve flag |' "$readme"
-grep -q '| Docker containers/networks | prune unused older than `168h` |' "$readme"
-grep -q '| Docker images | prune unused older than `720h` |' "$readme"
+grep -q '| Native build-cache budget | 1 GiB | 40 GiB |' "$readme"
+grep -q 'auto-cleanup.disposable=true' "$readme"
 grep -q '| journald | `SystemMaxUse=300M`, `SystemKeepFree=1G`, `MaxRetentionSec=14day` |' "$readme"
 grep -q '| btmp | rotate at `50M`, keep 1 rotated file |' "$readme"
 grep -q '| APT cache | autoclean every 7 days, clean every 30 days |' "$readme"

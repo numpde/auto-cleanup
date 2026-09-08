@@ -1,4 +1,5 @@
 #!/bin/sh
+# Inspect installed policy as data; never execute a staged cleanup program.
 set -eu
 
 usage() {
@@ -86,6 +87,11 @@ if [ ! -f "$COMMON_SH" ]; then
     exit 1
 fi
 . "$COMMON_SH"
+if [ ! -f "$SCRIPT_DIR/lib/policy.sh" ]; then
+    echo "missing support file: $SCRIPT_DIR/lib/policy.sh" >&2
+    exit 1
+fi
+. "$SCRIPT_DIR/lib/policy.sh"
 
 PREFIX=$(trim_trailing_slashes "$PREFIX")
 ETC_DIR=$(trim_trailing_slashes "$ETC_DIR")
@@ -158,12 +164,35 @@ if [ -n "$ROOT" ]; then
 fi
 
 check_executable "$(target "$PREFIX/sbin/vps-docker-clean")"
+managed_policy=$(target "$ETC_DIR/default/vps-docker-clean.policy")
+check_file "$managed_policy"
+POLICY_VALID=0
+if is_plain_file "$managed_policy" && read_managed_policy "$managed_policy"; then
+    saved_cache=$CACHE_GIB
+    profile_defaults
+    CACHE_GIB=$saved_cache
+    if [ "$(print_managed_policy)" = "$(cat "$managed_policy")" ]; then
+        POLICY_VALID=1
+        echo "Managed defaults (not live daemon state or operator age overrides):"
+        print_managed_policy
+    else
+        echo "bad     Managed policy differs from profile defaults; reinstall to regenerate it."
+        FAILED=1
+    fi
+else
+    FAILED=1
+fi
+override_file=$(target "$ETC_DIR/default/vps-docker-clean")
+if [ -e "$override_file" ]; then
+    echo "info    Operator overrides at $override_file may change runtime ages; systemd reads this file."
+fi
 service_file=$(target "$ETC_DIR/systemd/system/vps-docker-clean.service")
 timer_file=$(target "$ETC_DIR/systemd/system/vps-docker-clean.timer")
 check_file "$service_file"
 if is_plain_file "$service_file"; then
     if grep -Fxq "ConditionFileIsExecutable=$PREFIX/sbin/vps-docker-clean" "$service_file" &&
         grep -Fxq "Type=oneshot" "$service_file" &&
+        grep -Fxq "EnvironmentFile=$ETC_DIR/default/vps-docker-clean.policy" "$service_file" &&
         grep -Fxq "EnvironmentFile=-$ETC_DIR/default/vps-docker-clean" "$service_file" &&
         grep -Fxq "ExecStart=$PREFIX/sbin/vps-docker-clean" "$service_file" &&
         grep -Fxq "Nice=10" "$service_file" &&
@@ -177,7 +206,7 @@ if is_plain_file "$service_file"; then
 fi
 check_file "$timer_file"
 if is_plain_file "$timer_file"; then
-    if grep -q '^OnCalendar=weekly$' "$timer_file" &&
+    if [ "$POLICY_VALID" -eq 1 ] && grep -Fxq "OnCalendar=$SCHEDULE" "$timer_file" &&
         grep -q '^Persistent=true$' "$timer_file" &&
         grep -q '^RandomizedDelaySec=1h$' "$timer_file" &&
         grep -q '^AccuracySec=1h$' "$timer_file"; then
@@ -231,24 +260,15 @@ if [ "$SKIP_DOCKER_CONFIG" -eq 0 ]; then
             echo "missing python3 for Docker daemon policy validation"
             FAILED=1
         else
-            if python3 - "$daemon_json" <<'PY' >/dev/null 2>&1
-import json
-import sys
-
-with open(sys.argv[1], "r", encoding="utf-8") as handle:
-    data = json.load(handle)
-
-if data.get("log-driver") != "local":
-    raise SystemExit(1)
-opts = data.get("log-opts", {})
-expected = {"compress": "true", "max-file": "3", "max-size": "10m"}
-if opts != expected:
-    raise SystemExit(1)
-PY
+            if [ "$POLICY_VALID" -eq 1 ] && require_gc_capability &&
+                python3 "$REPO_DIR/lib/merge-docker-daemon.py" \
+                    --daemon-json "$daemon_json" \
+                    --policy-json "$REPO_DIR/fixtures/docker/daemon-log-policy.json" \
+                    --cache-gib "$CACHE_GIB" --check
             then
-                echo "ok      Docker daemon log policy"
+                echo "ok      Docker daemon logging and cache policy on disk"
             else
-                echo "bad     Docker daemon log policy"
+                echo "bad     Docker daemon logging or cache policy"
                 FAILED=1
             fi
             check_dockerd_config "$daemon_json"
@@ -291,9 +311,12 @@ if [ -z "$ROOT" ]; then
         fi
     fi
     if command -v docker >/dev/null 2>&1; then
-        logging_driver=$(docker info --format '{{.LoggingDriver}}' 2>/dev/null || true)
+        logging_driver=$(
+            unset DOCKER_CONTEXT DOCKER_HOST DOCKER_TLS DOCKER_TLS_VERIFY DOCKER_CERT_PATH
+            docker --host unix:///var/run/docker.sock info --format '{{.LoggingDriver}}' 2>/dev/null || true
+        )
         if [ -n "$logging_driver" ]; then
-            echo "Docker logging driver: $logging_driver"
+            echo "Local Docker logging driver: $logging_driver"
         fi
     fi
     echo "root filesystem:"

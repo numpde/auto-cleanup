@@ -1,8 +1,8 @@
 [Unit]
-Description=Weekly safe Docker disk cleanup
+Description=Scheduled Docker disk cleanup
 
 [Timer]
-OnCalendar=weekly
+OnCalendar=@SCHEDULE@
 Persistent=true
 RandomizedDelaySec=1h
 AccuracySec=1h

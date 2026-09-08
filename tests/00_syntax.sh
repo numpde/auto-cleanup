@@ -12,6 +12,7 @@ for script in \
     "$REPO_DIR/scripts/check.sh" \
     "$REPO_DIR/scripts/uninstall.sh" \
     "$REPO_DIR/scripts/lib/common.sh" \
+    "$REPO_DIR/scripts/lib/policy.sh" \
     "$REPO_DIR/fixtures/bin/vps-docker-clean" \
     "$REPO_DIR/tests/check-manifest.sh" \
     "$REPO_DIR/tests/run-all.sh" \
@@ -19,6 +20,7 @@ for script in \
     "$REPO_DIR/tests/01_manifest.sh" \
     "$REPO_DIR/tests/02_container_posture.sh" \
     "$REPO_DIR/tests/30_functionality.sh" \
+    "$REPO_DIR/tests/35_profiles.sh" \
     "$REPO_DIR/tests/40_docs_contract.sh" \
     "$REPO_DIR/tests/root-metadata.sh" \
     "$REPO_DIR/tests/fixtures/fake-dockerd.sh" \

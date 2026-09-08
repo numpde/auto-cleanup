@@ -4,6 +4,10 @@ set -eu
 printf '%s\n' "$*" >> "${FAKE_DOCKERD_LOG:?missing FAKE_DOCKERD_LOG}"
 
 case "$*" in
+    --version)
+        echo "Docker version ${FAKE_DOCKERD_VERSION:-28.0.0}, build test"
+        exit 0
+        ;;
     --validate\ --config-file\ *)
         ;;
     *)

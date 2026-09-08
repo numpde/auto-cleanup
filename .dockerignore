@@ -51,6 +51,7 @@ scripts/**
 !scripts/lib/
 scripts/lib/**
 !scripts/lib/common.sh
+!scripts/lib/policy.sh
 !scripts/test-container.sh
 !scripts/uninstall.sh
 !tests/
@@ -59,6 +60,7 @@ tests/**
 !tests/01_manifest.sh
 !tests/02_container_posture.sh
 !tests/30_functionality.sh
+!tests/35_profiles.sh
 !tests/40_docs_contract.sh
 !tests/check-manifest.sh
 !tests/fixtures/
