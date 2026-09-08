@@ -10,7 +10,8 @@ for test_script in \
     "$SCRIPT_DIR/02_container_posture.sh" \
     "$SCRIPT_DIR/40_docs_contract.sh" \
     "$SCRIPT_DIR/30_functionality.sh" \
-    "$SCRIPT_DIR/35_profiles.sh"
+    "$SCRIPT_DIR/35_profiles.sh" \
+    "$SCRIPT_DIR/36_install_progress.sh"
 do
     "$test_script"
 done

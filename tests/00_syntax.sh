@@ -21,6 +21,7 @@ for script in \
     "$REPO_DIR/tests/02_container_posture.sh" \
     "$REPO_DIR/tests/30_functionality.sh" \
     "$REPO_DIR/tests/35_profiles.sh" \
+    "$REPO_DIR/tests/36_install_progress.sh" \
     "$REPO_DIR/tests/40_docs_contract.sh" \
     "$REPO_DIR/tests/root-metadata.sh" \
     "$REPO_DIR/tests/fixtures/fake-dockerd.sh" \

@@ -296,11 +296,13 @@ EOF
 if FAKE_DOCKERD_LOG="$FAKE_ROOT/dockerd-install-reject.log" \
     FAKE_DOCKERD_MODE=reject \
     PATH="$FAKE_ROOT/dockerd-bin:$PATH" \
-    "$REPO_DIR/scripts/install.sh" --root "$MERGE_ROOT/validate-rollback" >/dev/null 2>&1; then
+    "$REPO_DIR/scripts/install.sh" --root "$MERGE_ROOT/validate-rollback" >"$FAKE_ROOT/dockerd-install-reject.out" 2>&1; then
     echo "install unexpectedly accepted dockerd-rejected daemon config" >&2
     exit 1
 fi
 grep -q -- '--validate --config-file' "$FAKE_ROOT/dockerd-install-reject.log"
+grep -q 'injected daemon configuration rejection' "$FAKE_ROOT/dockerd-install-reject.out"
+grep -q 'existing configuration is unchanged' "$FAKE_ROOT/dockerd-install-reject.out"
 python3 - "$MERGE_ROOT/validate-rollback/etc/docker/daemon.json" <<'PY'
 import json
 import sys

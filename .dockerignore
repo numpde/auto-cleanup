@@ -61,6 +61,7 @@ tests/**
 !tests/02_container_posture.sh
 !tests/30_functionality.sh
 !tests/35_profiles.sh
+!tests/36_install_progress.sh
 !tests/40_docs_contract.sh
 !tests/check-manifest.sh
 !tests/fixtures/

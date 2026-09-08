@@ -152,6 +152,22 @@ run() {
     fi
 }
 
+# Announce synchronous service calls before waiting, and preserve their exit status.
+run_systemctl() {
+    if [ "$DRY_RUN" -eq 1 ]; then
+        run systemctl "$@"
+        return
+    fi
+    echo "Running: systemctl $*"
+    if systemctl "$@"; then
+        echo "Completed: systemctl $*"
+    else
+        service_status=$?
+        echo "Failed: systemctl $* (exit $service_status)." >&2
+        return "$service_status"
+    fi
+}
+
 print_next_steps() {
     if [ -n "$ROOT" ] || [ "$ETC_DIR" != "/etc" ] || [ "$PREFIX" != "/usr/local" ]; then
         return
@@ -191,9 +207,9 @@ print_next_steps() {
 validate_dockerd_config() {
     config_path=$1
     if command -v dockerd >/dev/null 2>&1; then
-        if ! dockerd --validate --config-file "$config_path" >/dev/null 2>&1; then
+        if ! dockerd --validate --config-file "$config_path" >/dev/null; then
             echo "Docker daemon rejected config file: $config_path" >&2
-            echo "Run: dockerd --validate --config-file $config_path" >&2
+            echo "Installation stopped before installing files; the existing configuration is unchanged." >&2
             exit 1
         fi
         echo "Docker daemon accepted config file: $config_path"
@@ -213,6 +229,7 @@ prevalidate_docker_config() {
     [ "$SKIP_DOCKER_CONFIG" -eq 0 ] || return 0
     [ "$DRY_RUN" -eq 0 ] || return 0
 
+    echo "Preparing and validating Docker configuration before installing files..."
     DOCKER_VALIDATE_TMP=$(mktemp)
     prepare_dockerd_validation_config "$DOCKER_VALIDATE_TMP"
     validate_dockerd_config "$DOCKER_VALIDATE_TMP"
@@ -246,6 +263,7 @@ restore_docker_config_after_restart_failure() {
     else
         rm -f "$DAEMON_JSON"
     fi
+    echo "Previous Docker daemon configuration restored; other installed files and service changes remain." >&2
 }
 
 install_file() {
@@ -259,6 +277,7 @@ install_file() {
         echo "would install: $display_src -> $dst mode $mode"
         return
     fi
+    echo "Installing: $display_src -> $dst mode $mode"
     run install -d -m 0755 "$dst_dir"
     assert_parent_path_safe "$ROOT" "$dst"
     run install -m "$mode" "$src" "$dst"
@@ -452,6 +471,7 @@ if [ "$SKIP_DOCKER_CONFIG" -eq 0 ]; then
         prepare_docker_restart_rollback
         install -d -m 0755 "$DOCKER_DIR"
         assert_parent_path_safe "$ROOT" "$DAEMON_JSON"
+        echo "Merging Docker logging and cache settings into $DAEMON_JSON..."
         "$REPO_DIR/lib/merge-docker-daemon.py" \
             --daemon-json "$DAEMON_JSON" \
             --policy-json "$REPO_DIR/fixtures/docker/daemon-log-policy.json" \
@@ -473,30 +493,49 @@ if [ "$SKIP_DOCKER_CONFIG" -eq 0 ]; then
 fi
 
 if [ "$SYSTEMD_ACTIONS" -eq 1 ] && command -v systemctl >/dev/null 2>&1; then
-    run systemctl daemon-reload
+    run_systemctl daemon-reload
     if [ "$ENABLE_TIMER" -eq 1 ]; then
-        run systemctl enable --now vps-docker-clean.timer
+        if [ "$DRY_RUN" -eq 0 ]; then
+            echo "Enabling scheduled cleanup; a missed timer run may trigger pruning soon."
+        fi
+        run_systemctl enable --now vps-docker-clean.timer
     fi
     if [ "$SKIP_JOURNALD" -eq 0 ]; then
-        run systemctl restart systemd-journald
+        run_systemctl restart systemd-journald
     fi
     if [ "$SKIP_DOCKER_CONFIG" -eq 0 ]; then
         if [ "$RESTART_DOCKER" -eq 1 ]; then
             if [ "$DRY_RUN" -eq 1 ]; then
-                run systemctl restart docker
-            elif ! systemctl restart docker; then
-                restore_docker_config_after_restart_failure
-                systemctl restart docker >/dev/null 2>&1 || true
-                exit 1
+                run_systemctl restart docker
+            else
+                echo "Restarting Docker; running containers may be interrupted. Waiting for systemd to finish the restart."
+                echo "If this takes time, follow progress in another terminal: sudo journalctl -fu docker.service"
+                if ! run_systemctl restart docker; then
+                    restore_docker_config_after_restart_failure
+                    echo "Retrying Docker restart with the previous daemon configuration..." >&2
+                    if run_systemctl restart docker; then
+                        echo "Docker recovery restart completed, but installation failed." >&2
+                    else
+                        echo "Docker recovery restart also failed. Inspect: sudo systemctl status docker.service; sudo journalctl -u docker.service -n 100 --no-pager" >&2
+                    fi
+                    exit 1
+                fi
             fi
         else
-            echo "Docker was not restarted: the new cache budget and logging defaults are not activated by this install."
+            if [ "$DRY_RUN" -eq 1 ]; then
+                echo "Docker would not be restarted; restart it after installation to activate the cache budget and logging defaults."
+            else
+                echo "Docker was not restarted: the new cache budget and logging defaults are not activated by this install."
+            fi
         fi
     fi
 else
     echo "Skipped systemd service actions."
 fi
 
+if [ "$DRY_RUN" -eq 0 ]; then
+    echo "Installation complete."
+fi
 print_next_steps
 
 if [ "$DRY_RUN" -eq 1 ]; then

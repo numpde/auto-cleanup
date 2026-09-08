@@ -109,6 +109,14 @@ journald fixture was installed. Docker is restarted only when you pass
 `--restart-docker`. That is an immediate Docker service restart; expect running
 containers to be interrupted according to your Docker/systemd restart policy.
 
+The installer announces each service command before waiting for it and reports
+completion only when the command succeeds. Docker startup can take time; while
+the installer waits, follow its logs in another terminal with
+`sudo journalctl -fu docker.service`. A failed Docker restart restores the
+previous daemon configuration and attempts one recovery restart. Recovery is
+reported separately: the installation still fails, and other installed files
+and earlier service changes remain.
+
 The Docker daemon config is merged as JSON and backed up before modification.
 Unrelated daemon and `builder` keys are preserved. The complete `builder.gc`
 section is replaced with an enabled, size-based rule using the selected budget
