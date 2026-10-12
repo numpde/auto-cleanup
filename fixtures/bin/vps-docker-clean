@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply host retention while deployment owns the protected image inventory."""
+"""Apply host retention with explicit additional image protection."""
 import datetime as dt
 import fcntl
 import json
@@ -129,7 +129,51 @@ def assert_inventory_current(path, raw, expiry):
         raise ValueError("protection inventory changed or expired during cleanup; stopping further deletion")
 
 
-def retain_images(path, raw, expiry, protected, root, minimum_free, cutoff):
+class ImageProtection:
+    def __init__(self):
+        self.mode = os.environ.get("IMAGE_PROTECTION_MODE", "inventory")
+        if self.mode not in ("none", "tags", "inventory"):
+            raise ValueError(f"IMAGE_PROTECTION_MODE must be none, tags or inventory; received {self.mode!r}")
+        self.path = Path(os.environ.get("IMAGE_PROTECTION_FILE", "/etc/default/vps-docker-clean.images.json"))
+        if not self.path.is_absolute():
+            raise ValueError("IMAGE_PROTECTION_FILE must be an absolute path")
+        self.tags = os.environ.get("IMAGE_KEEP_TAGS", "").split()
+        if self.mode != "tags" and self.tags:
+            raise ValueError(f"IMAGE_KEEP_TAGS requires IMAGE_PROTECTION_MODE=tags; remove it for mode {self.mode!r}")
+        if self.mode == "tags" and not self.tags:
+            raise ValueError("IMAGE_PROTECTION_MODE=tags requires IMAGE_KEEP_TAGS with explicit local repository:tag names")
+        for reference in self.tags:
+            repository, separator, tag = reference.rpartition(":")
+            if (not separator or not repository or "@" in repository
+                    or not tag or "/" in tag
+                    or IMAGE_ID.fullmatch(reference)):
+                raise ValueError(f"IMAGE_KEEP_TAGS requires explicit repository:tag names, not digests or image IDs; received {reference!r}")
+
+    def load(self, daemon_id):
+        if self.mode == "inventory":
+            self.raw, self.expiry, self.inventory_ids = load_protection(self.path, daemon_id)
+        return self.refresh()
+
+    def refresh(self):
+        if self.mode == "inventory":
+            assert_inventory_current(self.path, self.raw, self.expiry)
+            return self.inventory_ids
+        protected = set()
+        for reference in self.tags:
+            try:
+                row = inspect("image", reference)
+            except RuntimeError as error:
+                raise ValueError(f"Cannot protect selected local tag {reference!r}: {error}") from error
+            tags = row.get("RepoTags")
+            if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
+                raise ValueError(f"Cannot protect selected local tag {reference!r}: Docker RepoTags must be a list of tag strings")
+            if reference not in tags:
+                raise ValueError(f"Selected local tag {reference!r} is absent from its resolved image's RepoTags; stopping cleanup")
+            protected.add(image_id(row["Id"]))
+        return protected
+
+
+def retain_images(protection, container_ids, root, minimum_free, cutoff):
     candidates = []
     for reference in set(docker("image", "ls", "-aq", "--no-trunc").splitlines()):
         reference = image_id(reference)
@@ -139,17 +183,21 @@ def retain_images(path, raw, expiry, protected, root, minimum_free, cutoff):
         candidates.append((timestamp(row["Created"]), reference))
     failures = False
     for created, reference in sorted(candidates):
-        assert_inventory_current(path, raw, expiry)
-        protected.update(container_images())
-        if reference in protected:
+        container_ids.update(container_images())
+        protected = protection.refresh()
+        if reference in protected or reference in container_ids:
             print(f"Retain protected image {reference}", flush=True)
             continue
         if created > cutoff and available_bytes(root) >= minimum_free:
             continue
+        container_ids.update(container_images())
+        protected = protection.refresh()
+        if reference in protected or reference in container_ids:
+            print(f"Retain protected image {reference}", flush=True)
+            continue
         print(f"Remove unprotected image {reference} (created {created.isoformat()})", flush=True)
         try:
             # No parent pruning: an untagged parent can itself be protected.
-            assert_inventory_current(path, raw, expiry)
             docker("image", "rm", "--no-prune", reference, capture=False)
         except RuntimeError as error:
             print(error, file=sys.stderr)
@@ -175,13 +223,14 @@ def main():
     free_gib = os.environ.get("IMAGE_MIN_FREE_GIB", "0")
     if not re.fullmatch(r"0|[1-9][0-9]*", free_gib):
         raise ValueError("IMAGE_MIN_FREE_GIB must be whole GiB without leading zeros; 0 disables space pressure")
-    path = Path(os.environ.get("IMAGE_PROTECTION_FILE", "/etc/default/vps-docker-clean.images.json"))
-    if not path.is_absolute():
-        raise ValueError("IMAGE_PROTECTION_FILE must be an absolute path")
+    protection = ImageProtection()
     if sys.argv[1:] == ["--show-policy"]:
         for key, value in ages.items():
             print(f"{key}={value}")
-        print(f"IMAGE_MIN_FREE_GIB={free_gib}\nIMAGE_PROTECTION_FILE={path}")
+        print(f"IMAGE_MIN_FREE_GIB={free_gib}\nIMAGE_PROTECTION_MODE={protection.mode}")
+        if protection.mode == "tags":
+            print(f"IMAGE_KEEP_TAGS={' '.join(protection.tags)}")
+        print(f"IMAGE_PROTECTION_FILE={protection.path}")
         print("Container selector: auto-cleanup.disposable=true\nDocker endpoint: unix:///var/run/docker.sock")
         return 0
     if sys.argv[1:]:
@@ -197,26 +246,25 @@ def main():
     root = info["DockerRootDir"]
     available_bytes(root)
     # Publishers must hold this same stable lock through publication and deployment.
-    descriptor = os.open(str(path) + ".lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    descriptor = os.open(str(protection.path) + ".lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     with os.fdopen(descriptor, "r+") as lock:
-        trusted_file(lock.fileno(), f"protection lock {path}.lock")
+        trusted_file(lock.fileno(), f"protection lock {protection.path}.lock")
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
-            raise RuntimeError(f"Protection lock {path}.lock is busy; deployment or another cleanup is in progress") from error
-        raw, expiry, protected = load_protection(path, info["ID"])
-        protected.update(container_images())
+            raise RuntimeError(f"Protection lock {protection.path}.lock is busy; deployment or another cleanup is in progress") from error
+        protection.load(info["ID"])
+        container_ids = container_images()
         failures = False
         for args in (("container", "prune", "-f", "--filter", f"until={ages['CONTAINER_UNTIL']}", "--filter", "label=auto-cleanup.disposable=true"),
                      ("network", "prune", "-f", "--filter", f"until={ages['NETWORK_UNTIL']}")):
             try:
-                assert_inventory_current(path, raw, expiry)
+                protection.refresh()
                 docker(*args, capture=False)
             except RuntimeError as error:
                 print(error, file=sys.stderr)
                 failures = True
-        failures |= retain_images(path, raw, expiry, protected, root, int(free_gib) * 1024**3,
-                                  cutoff)
+        failures |= retain_images(protection, container_ids, root, int(free_gib) * 1024**3, cutoff)
         if failures:
             raise RuntimeError("One or more Docker cleanup commands failed.")
     return 0

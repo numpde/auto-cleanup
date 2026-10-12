@@ -15,11 +15,23 @@ if args[0] == 'info':
     print(json.dumps({'ID': 'test-daemon', 'DockerRootDir': str(state_path.parent)}))
 elif args[:2] == ['image', 'inspect']:
     reference = args[2]
-    images = [image for image in state['images'] if reference == image['Id'] or reference in image.get('RepoDigests', [])]
+    lookup = state.get('inspect_aliases', {}).get(reference, reference)
+    images = [image for image in state['images'] if lookup == image['Id'] or lookup in image.get('RepoDigests', []) or lookup in image.get('RepoTags', [])]
     if not images:
         sys.exit(1)
     print(json.dumps([None] if state.get('malformed_inspect') else images))
 elif args[:2] == ['container', 'ls']:
+    if state.get('retarget_tag_after_container_lists') or state.get('fail_container_list_at'):
+        state['container_lists'] = state.get('container_lists', 0) + 1
+        if state['container_lists'] == state.get('retarget_tag_after_container_lists'):
+            for image in state['images']:
+                tags = [tag for tag in image.get('RepoTags', []) if tag != state['retarget_tag']]
+                if image['Id'] == state['retarget_to']:
+                    tags.append(state['retarget_tag'])
+                image['RepoTags'] = tags
+        state_path.write_text(json.dumps(state))
+        if state['container_lists'] == state.get('fail_container_list_at'):
+            sys.exit(1)
     for container in state['containers']:
         print(container)
 elif args[:2] == ['container', 'inspect']:
@@ -40,5 +52,9 @@ elif args[:2] in (['container', 'prune'], ['network', 'prune']):
         state_path.write_text(json.dumps(state))
     if state.get('change_inventory'):
         Path(os.environ['IMAGE_PROTECTION_FILE']).write_text('{}')
+    if args[0] == 'container' and state.get('remove_tag_on_container_prune'):
+        for image in state['images']:
+            image['RepoTags'] = [tag for tag in image.get('RepoTags', []) if tag != state['remove_tag_on_container_prune']]
+        state_path.write_text(json.dumps(state))
 else:
     raise AssertionError(args)

@@ -16,5 +16,16 @@
 
 # 0 disables pressure; set a host-specific free-space floor.
 # IMAGE_MIN_FREE_GIB=5
+# Choose additional image protection; container source IDs are always retained.
+# inventory (default): deployment publishes the strict digest inventory.
+# none: no additional images are protected; no inventory is needed.
+# tags: keep the local image IDs for the exact tags in IMAGE_KEEP_TAGS.
+# IMAGE_PROTECTION_MODE=inventory
+# For tags mode, supply whitespace-separated repository:tag names that appear
+# exactly in local Docker image RepoTags; latest is an ordinary literal tag.
+# IMAGE_PROTECTION_MODE=tags
+# IMAGE_KEEP_TAGS="example.test/app:latest example.test/app:rollback"
+# Leave IMAGE_KEEP_TAGS unset or empty in none/inventory mode.
 # IMAGE_PROTECTION_FILE=/etc/default/vps-docker-clean.images.json
-# Deployment owns that inventory and its adjacent .lock file; see README.
+# All modes use IMAGE_PROTECTION_FILE plus .lock for cleanup/deployment locking.
+# Only inventory mode reads the inventory itself; see README.

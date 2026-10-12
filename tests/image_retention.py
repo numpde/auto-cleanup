@@ -1,4 +1,4 @@
-"""Exercise immutable protection, fail-closed inputs and retention effects."""
+"""Exercise chosen image protection, rejected inputs and retention effects."""
 import copy
 import datetime as dt
 import fcntl
@@ -13,8 +13,9 @@ CURRENT = 'sha256:' + 'a' * 64
 OLD = 'sha256:' + 'b' * 64
 YOUNG = 'sha256:' + 'c' * 64
 DIGEST = 'example.test/app@sha256:' + 'd' * 64
+TAG = 'example.test/app:latest'
 STATE = {'images': [
-    {'Id': CURRENT, 'RepoDigests': [DIGEST], 'Created': '2020-01-01T00:00:00Z'},
+    {'Id': CURRENT, 'RepoDigests': [DIGEST], 'RepoTags': [TAG], 'Created': '2020-01-01T00:00:00Z'},
     {'Id': OLD, 'Created': '2020-01-01T00:00:00Z'},
     {'Id': YOUNG, 'Created': dt.datetime.now(dt.timezone.utc).isoformat()},
 ], 'containers': {}}
@@ -22,7 +23,8 @@ INVENTORY = {'version': 1, 'daemon_id': 'test-daemon', 'expires_at': '2099-01-01
              'deployments': {'app': {'current': [DIGEST], 'rollback': []}}, 'recovery': []}
 
 
-def exercise(inventory=INVENTORY, state=STATE, budget='0', locked=False, inventory_mode=0o600, lock_mode=0o600):
+def exercise(inventory=INVENTORY, state=STATE, budget='0', locked=False, inventory_mode=0o600,
+             lock_mode=0o600, overrides=None, show_policy=False):
     with tempfile.TemporaryDirectory(prefix='auto-cleanup-retention-', dir=os.environ['TMPDIR']) as scratch:
         root = Path(scratch)
         path = root / 'protection.json'
@@ -35,13 +37,19 @@ def exercise(inventory=INVENTORY, state=STATE, budget='0', locked=False, invento
                    IMAGE_PROTECTION_FILE=str(path), RETENTION_STATE=str(state_path),
                    FAKE_DOCKER_LOG=str(root / 'log'), IMAGE_MIN_FREE_GIB=budget,
                    CONTAINER_UNTIL='24h', NETWORK_UNTIL='24h', IMAGE_UNTIL='24h')
+        env.pop('IMAGE_PROTECTION_MODE', None)
+        env.pop('IMAGE_KEEP_TAGS', None)
+        env.update(overrides or {})
         with Path(str(path) + '.lock').open('w') as lock:
             os.fchmod(lock.fileno(), lock_mode)
             if locked:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            result = subprocess.run([str(REPO / 'fixtures/bin/vps-docker-clean')], env=env,
+            command = [str(REPO / 'fixtures/bin/vps-docker-clean')]
+            if show_policy:
+                command.append('--show-policy')
+            result = subprocess.run(command, env=env,
                                     text=True, capture_output=True, timeout=15)
-        log = (root / 'log').read_text()
+        log = (root / 'log').read_text() if (root / 'log').exists() else ''
         remaining = {image['Id'] for image in json.loads(state_path.read_text())['images']}
         assert 'image prune' not in log and 'volume' not in log and 'buildx' not in log
         return result, log, remaining
@@ -126,4 +134,143 @@ assert result.returncode != 0 and OLD in remaining
 result, log, remaining = exercise(budget='999999')
 assert result.returncode != 0 and remaining == {CURRENT}, (result.stderr, remaining)
 assert 'Cannot meet' in result.stderr
+
+# Modes without an inventory protect container identities and need no publisher.
+for mode in ('none', 'tags'):
+    options = {'IMAGE_PROTECTION_MODE': mode}
+    if mode == 'tags':
+        options['IMAGE_KEEP_TAGS'] = TAG
+    state = copy.deepcopy(STATE)
+    state['containers'] = {'stopped': OLD, 'absent-source': missing}
+    state['disposable_containers'] = True
+    result, log, remaining = exercise(inventory=None, state=state, overrides=options)
+    expected = {OLD, YOUNG} | ({CURRENT} if mode == 'tags' else set())
+    assert result.returncode == 0 and remaining == expected, (result.stderr, remaining)
+    assert f'image inspect {missing}' not in log
+    result, log, remaining = exercise(inventory=None, locked=True, overrides=options)
+    assert result.returncode != 0 and 'prune' not in log and 'image rm' not in log
+    result, log, remaining = exercise(inventory=None, lock_mode=0o666, overrides=options)
+    assert result.returncode != 0 and 'prune' not in log and 'image rm' not in log
+    expired = copy.deepcopy(INVENTORY)
+    expired['expires_at'] = '2000-01-01T00:00:00Z'
+    for unused_inventory, file_mode in [('{}', 0o600), (expired, 0o600),
+                                        (INVENTORY, 0o666), (INVENTORY, 0o000)]:
+        result, log, remaining = exercise(inventory=unused_inventory, inventory_mode=file_mode,
+                                          overrides=options)
+        expected = {YOUNG} | ({CURRENT} if mode == 'tags' else set())
+        assert result.returncode == 0 and remaining == expected, (result.stderr, remaining)
+
+result, log, remaining = exercise(inventory=None, overrides={'IMAGE_PROTECTION_MODE': 'none'})
+assert result.returncode == 0 and remaining == {YOUNG}, (result.stderr, remaining)
+assert f'image rm --no-prune {CURRENT}' in log
+
+# Failure of the final container scan stops subsequent deletion, even though
+# genuine image-removal failures are reported while other candidates continue.
+state = copy.deepcopy(STATE)
+state['fail_container_list_at'] = 3
+result, log, remaining = exercise(inventory=None, state=state,
+                                  overrides={'IMAGE_PROTECTION_MODE': 'none'})
+assert result.returncode != 0 and remaining == {CURRENT, OLD, YOUNG}, (result.stderr, remaining)
+assert 'container ls -aq --no-trunc' in result.stderr and 'image rm' not in log
+assert 'Traceback' not in result.stderr
+
+# A selected local tag protects its image identity, including all other aliases.
+state = copy.deepcopy(STATE)
+state['images'][0]['RepoTags'].append('example.test/app:rollback')
+state['images'][1]['RepoTags'] = ['example.test/app:old']
+tag_options = {'IMAGE_PROTECTION_MODE': 'tags', 'IMAGE_KEEP_TAGS': TAG}
+result, log, remaining = exercise(inventory=None, state=state, overrides=tag_options)
+assert result.returncode == 0 and remaining == {CURRENT, YOUNG}, (result.stderr, remaining)
+assert f'image rm --no-prune {CURRENT}' not in log
+assert f'image inspect {TAG}' in log
+
+result, log, remaining = exercise(inventory=None, state=state, overrides={
+    'IMAGE_PROTECTION_MODE': 'tags', 'IMAGE_KEEP_TAGS': TAG + ' example.test/app:old'})
+assert result.returncode == 0 and remaining == {CURRENT, OLD, YOUNG}, (result.stderr, remaining)
+
+result, log, remaining = exercise(inventory=None, budget='999999', overrides=tag_options)
+assert result.returncode != 0 and remaining == {CURRENT}, (result.stderr, remaining)
+assert 'Cannot meet' in result.stderr
+
+# A moved tag protects its current target; the old target becomes eligible
+# unless a container still refers to it.
+state = copy.deepcopy(STATE)
+state.update(retarget_tag_after_container_lists=2, retarget_tag=TAG, retarget_to=OLD)
+result, log, remaining = exercise(inventory=None, state=state, overrides=tag_options)
+assert result.returncode == 0 and remaining == {OLD, YOUNG}, (result.stderr, log, remaining)
+assert f'image rm --no-prune {CURRENT}' in log
+assert f'image rm --no-prune {OLD}' not in log
+
+# Retarget between the first guard and the removal guard: the refreshed ID
+# must be used, rather than merely resolving the changed tag and discarding it.
+state = copy.deepcopy(STATE)
+state.update(retarget_tag_after_container_lists=4, retarget_tag=TAG, retarget_to=OLD)
+result, log, remaining = exercise(inventory=None, state=state, overrides=tag_options)
+assert result.returncode == 0 and OLD in remaining, (result.stderr, log, remaining)
+assert f'image rm --no-prune {OLD}' not in log
+
+# Exact local names cannot be replaced by a convenient inspect alias, and
+# missing selected tags stop all pruning before the initial validation finishes.
+for selected in ('example.test/app:missing', 'app:latest'):
+    state = copy.deepcopy(STATE)
+    if selected == 'app:latest':
+        state['inspect_aliases'] = {selected: CURRENT}
+    result, log, remaining = exercise(inventory=None, state=state, overrides={
+        'IMAGE_PROTECTION_MODE': 'tags', 'IMAGE_KEEP_TAGS': selected})
+    assert result.returncode != 0 and 'prune' not in log and 'image rm' not in log
+    assert selected in result.stderr and 'Traceback' not in result.stderr
+
+state = copy.deepcopy(STATE)
+state['remove_tag_on_container_prune'] = TAG
+result, log, remaining = exercise(inventory=None, state=state, overrides=tag_options)
+assert result.returncode != 0 and 'container prune' in log
+assert 'network prune' not in log and 'image rm' not in log
+
+state = copy.deepcopy(STATE)
+state['malformed_inspect'] = True
+result, log, remaining = exercise(inventory=None, state=state, overrides=tag_options)
+assert result.returncode != 0 and 'prune' not in log and 'image rm' not in log
+assert 'cannot resolve one image object' in result.stderr and 'Traceback' not in result.stderr
+
+for malformed_tags in (TAG, {TAG: 'alias'}, [TAG, 7]):
+    state = copy.deepcopy(STATE)
+    state['images'][0]['RepoTags'] = malformed_tags
+    result, log, remaining = exercise(inventory=None, state=state, overrides=tag_options)
+    assert result.returncode != 0 and 'prune' not in log and 'image rm' not in log
+    assert 'RepoTags' in result.stderr and 'Traceback' not in result.stderr
+
+invalid_options = [
+    {'IMAGE_PROTECTION_MODE': ''},
+    {'IMAGE_PROTECTION_MODE': 'unknown'},
+    {'IMAGE_PROTECTION_MODE': 'tags'},
+    {'IMAGE_PROTECTION_MODE': 'tags', 'IMAGE_KEEP_TAGS': ' \t '},
+    {'IMAGE_PROTECTION_MODE': 'none', 'IMAGE_KEEP_TAGS': TAG},
+    {'IMAGE_PROTECTION_MODE': 'inventory', 'IMAGE_KEEP_TAGS': TAG},
+]
+for reference in ('example.test/app', 'registry:5000/app', DIGEST, CURRENT, 'example.test/app:'):
+    invalid_options.append({'IMAGE_PROTECTION_MODE': 'tags', 'IMAGE_KEEP_TAGS': reference})
+for options in invalid_options:
+    result, log, remaining = exercise(overrides=options)
+    assert result.returncode != 0 and not log, (options, result.stderr, log)
+    assert 'IMAGE_' in result.stderr and 'Traceback' not in result.stderr
+
+# Empty resets are valid outside tags mode. The default remains strict inventory.
+for mode in ('none', 'inventory'):
+    result, log, remaining = exercise(overrides={
+        'IMAGE_PROTECTION_MODE': mode, 'IMAGE_KEEP_TAGS': ' \t '})
+    assert result.returncode == 0, result.stderr
+result, log, remaining = exercise(inventory=None)
+assert result.returncode != 0 and 'prune' not in log
+
+# Reporting the selected policy requires no Docker daemon or inventory read.
+for mode in ('none', 'tags', 'inventory'):
+    options = {'IMAGE_PROTECTION_MODE': mode}
+    if mode == 'tags':
+        options['IMAGE_KEEP_TAGS'] = TAG + ' example.test/app:rollback'
+    result, log, remaining = exercise(inventory=None, overrides=options, show_policy=True)
+    assert result.returncode == 0 and not log, (result.stderr, log)
+    assert f'IMAGE_PROTECTION_MODE={mode}\n' in result.stdout
+    if mode == 'tags':
+        assert f"IMAGE_KEEP_TAGS={options['IMAGE_KEEP_TAGS']}\n" in result.stdout
+
 print('image retention ok')

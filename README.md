@@ -4,10 +4,11 @@ Install disk-retention policies for a Linux Docker host: image, container and
 network cleanup; local build-cache and log limits; journald retention; failed-login
 log rotation; and APT cache cleanup.
 
-The cleanup service protects images referenced by containers and images explicitly
-retained for deployment, rollback or recovery. **Before enabling it, configure
-deployment tooling to supply the protection inventory described below.** This
-repository supplies the reader of that inventory, not its publisher.
+The cleanup service always protects images referenced by containers. Choose
+whether to retain additional images through selected local tags or a deployment
+inventory, or to apply cleanup to all images without container references.
+**Before enabling cleanup, choose [an image protection mode](#2-choose-image-protection-and-review-existing-schedules).**
+The default remains `inventory`; it requires a valid deployment inventory.
 
 ## Requirements and defaults
 
@@ -73,11 +74,42 @@ find /tmp/auto-cleanup-root -type f -print
 Staging preserves the normal absolute layout beneath that root and skips service
 actions. Dry-run and staging can run without sudo.
 
-### 2. Prepare image protection and existing schedules
+### 2. Choose image protection and review existing schedules
 
-Configure your deployment tooling to publish [the protection inventory](#image-protection)
-and use its shared lock before enabling cleanup. An absent or invalid inventory
-blocks the entire cleanup service, including container and network pruning.
+Choose one mode for `/etc/default/vps-docker-clean`, the operator's systemd
+EnvironmentFile. The installer preserves this file on reinstall. All modes protect
+container references and apply the same age and free-space rules to other images.
+
+| Mode | Additional image protection | Preparation |
+| --- | --- | --- |
+| `none` | None | Set `IMAGE_PROTECTION_MODE=none` |
+| `tags` | Images currently bearing selected local tags | Set the mode and a nonempty `IMAGE_KEEP_TAGS` list |
+| `inventory` (default) | Deployment, rollback and recovery digests | Configure tooling to publish and renew [the inventory](#deployment-inventory-mode) |
+
+For container references alone, use:
+
+```ini
+IMAGE_PROTECTION_MODE=none
+```
+
+To also keep selected tagged images, use their exact local repository:tag names:
+
+```ini
+IMAGE_PROTECTION_MODE=tags
+IMAGE_KEEP_TAGS='my-app:latest other:stable'
+```
+
+Cleanup resolves tags to local image IDs automatically. `latest` is a literal tag
+name; it does not select the newest image or fetch anything from a registry.
+Every selected tag must exist locally before any pruning can start.
+
+Leaving the mode unset selects `inventory`. An absent or invalid inventory blocks
+the entire cleanup service, including container and network pruning. Setting
+`none` or `tags` intentionally replaces inventory protection, even if an inventory
+already exists. These modes need no inventory publisher. Remove any nonempty
+`IMAGE_KEEP_TAGS` when selecting `none` or `inventory`; it is rejected outside
+`tags` mode. See [image protection](#image-protection) for tag changes and the
+shared lock.
 
 When replacing an existing cleanup schedule, disable its image-pruning jobs and
 wait for any active run to finish before preparing the replacement. Use one host
@@ -130,10 +162,11 @@ with `sudo journalctl -fu docker.service`.
 
 ### 4. Inspect and enable
 
-Review the profile and override files, confirm the protection publisher and lock
-participation are configured, and use the [inspection commands](#inspect-and-run)
-below. Installed policy checks do not validate the protection inventory or prove
-that daemon changes are active.
+Review the profile and override files, confirm your chosen image protection mode
+is prepared, and use the [inspection commands](#inspect-and-run) below. For
+`inventory`, confirm publication, renewal and deployment lock participation.
+Installed policy checks do not validate selected tags or the protection inventory,
+or prove that daemon changes are active.
 
 Once ready:
 
@@ -173,17 +206,42 @@ before writing.
 
 ## Image protection
 
-Docker reveals which images existing containers reference. It cannot decide which
-unused image you intend to retain for a future deployment, rollback or recovery.
-Your deployment tooling supplies those choices; cleanup applies the host's image
-age and space policy to the remaining images.
+Container image IDs are protected in every mode, including stopped containers
+and references captured before disposable-container pruning. Cleanup retains those
+captured references for the entire run and adds container references found before
+image removal. An absent container source image does not block unrelated cleanup.
 
-The default inventory path is `/etc/default/vps-docker-clean.images.json`. No
-publisher or deployment lock participant is included here. Deployment tooling
-must publish the complete inventory, renew its expiry through reconciliation,
-and coordinate image/container changes through the lock below. Renewal must
-continue even when no new deployment occurs. Cleanup cannot discover an omitted
-rollback requirement.
+In `none` mode, container references are the only image protection. In `tags`
+mode, cleanup also protects each selected tag's current local image. It checks
+tags again before pruning and image removal. If a tag moves, its new target is
+protected; the old target becomes eligible if no remaining protection covers it.
+If a selected tag disappears, cleanup stops. Earlier deletions are not rolled back.
+Tags outside `IMAGE_KEEP_TAGS` do not provide additional protection.
+
+### Shared lock in every mode
+
+All cleanup invocations for one daemon must use the same `IMAGE_PROTECTION_FILE`
+path. Cleanup takes an exclusive lock on that path plus `.lock`, by default
+`/etc/default/vps-docker-clean.images.json.lock`. Its parent directory must already
+exist. In `none` and `tags` modes, the configured path is used only to locate the
+lock; cleanup does not read an inventory there.
+
+The lock must be a regular file, not a symlink, owned by root for the installed
+service, with no group or other write permission; use mode `0600`. Cleanup creates it if absent
+and fails promptly if it is busy. Never replace or unlink the lock file.
+Deployment tooling can use the same exclusive `flock` through image/container
+changes to coordinate with cleanup. Clients that ignore the lock can race cleanup.
+
+### Deployment inventory mode
+
+`inventory` is the default and preserves the existing requirement for an explicit,
+valid inventory. Docker cannot decide which unused image you intend to retain for
+a future deployment, rollback or recovery. Deployment tooling must publish those
+choices and renew the inventory's expiry, even when no new deployment occurs.
+Cleanup cannot discover an omitted rollback requirement. This repository supplies
+the reader, not a publisher or deployment lock participant.
+
+The default inventory path is `/etc/default/vps-docker-clean.images.json`.
 
 The following shows the format; replace all placeholders, including expiry,
 with real values before use:
@@ -221,28 +279,21 @@ not count as retained local recovery. The inventory must name at least one deplo
 nonempty `current` list; `rollback` and `recovery` may be empty when none are deliberately retained.
 Timestamps require a timezone, for example `2030-01-01T00:00:00Z`.
 
-Keep the inventory and its adjacent `.lock` file owned by root for the installed
-service as regular files, not symlinks, without group or other write permission;
-use mode `0600`. Missing,
+Keep the inventory owned by root for the installed service as a regular file,
+not a symlink, without group or other write permission; use mode `0600`. Missing,
 expired, malformed, insecure or wrong-daemon inventories block cleanup. Duplicate
 JSON keys and unknown fields are rejected. The maximum inventory size is 1 MiB.
 
-All deployment publishers and cleanup invocations must use one inventory path
-for the daemon and the same stable lock file: `IMAGE_PROTECTION_FILE` plus
-`.lock`. Hold an exclusive `flock` before pulling images or changing containers
-and through atomic publication of the final inventory. Write a temporary file in
-the same directory and rename it while holding the lock; never replace or
-unlink the lock file. Before dropping old container references, publish the
-union of current, incoming and rollback digests after they resolve locally.
+All deployment publishers must use the same inventory path and participate in
+[the shared lock](#shared-lock-in-every-mode). Hold an exclusive `flock` before
+pulling images or changing containers and through atomic publication of the final
+inventory. Write a temporary file in the same directory and rename it while
+holding the lock. Before dropping old container references, publish the union of
+current, incoming and rollback digests after they resolve locally.
 
-Cleanup fails promptly if the lock is busy and rechecks inventory bytes and
-expiry immediately before each mutation. Docker clients that ignore this lock
-can still race cleanup; deployment tooling must participate.
-
-Container image IDs are protected automatically, including stopped containers
-and the references captured before disposable-container pruning. An absent
-container source image does not block unrelated cleanup. Explicitly listed
-inventory digests must still exist locally.
+Cleanup rechecks inventory bytes and expiry immediately before each mutation.
+Changed or expired inventory stops further deletion. Explicitly listed inventory
+digests must exist locally when the inventory is loaded.
 
 ## Cleanup policy and overrides
 
@@ -250,11 +301,12 @@ Only stopped containers labelled `auto-cleanup.disposable=true` are eligible for
 container pruning. Apply that label only when their writable files and logs may
 be deleted. Ordinary containers remain retained, including stopped or failed ones.
 All age thresholds measure creation age, not time since last use or download.
-Tags and Compose files alone do not protect an image.
+Compose files do not protect images; tags protect them only when selected in
+`tags` mode.
 
-Image cleanup considers the oldest images first, preserving inventory and
-container protection. An unprotected image older than `IMAGE_UNTIL` is eligible
-regardless of free space. When `IMAGE_MIN_FREE_GIB` is nonzero, space pressure
+Image cleanup considers the oldest images first, preserving container references
+and the additional protection selected by the mode. An unprotected image older
+than `IMAGE_UNTIL` is eligible regardless of free space. When `IMAGE_MIN_FREE_GIB` is nonzero, space pressure
 may also evict younger unprotected images until that free-space floor is reached.
 Available bytes are measured on Docker's reported root filesystem; shared image
 sizes and Docker's reclaimable estimate are not counted as released bytes.
@@ -281,7 +333,9 @@ See [the override template](fixtures/default/vps-docker-clean.example).
 | `DOCKER` | `docker`; an executable name or path |
 | `CONTAINER_UNTIL`, `NETWORK_UNTIL`, `IMAGE_UNTIL` | Profile defaults; positive whole hours such as `48h`, without leading zeros |
 | `IMAGE_MIN_FREE_GIB` | `0` disables pressure; nonnegative whole GiB without leading zeros |
-| `IMAGE_PROTECTION_FILE` | `/etc/default/vps-docker-clean.images.json`; absolute path |
+| `IMAGE_PROTECTION_MODE` | `inventory`; `none`, `tags` or `inventory` |
+| `IMAGE_KEEP_TAGS` | Empty; whitespace-separated explicit local repository:tag names; must be nonempty in `tags` mode and empty in other modes |
+| `IMAGE_PROTECTION_FILE` | `/etc/default/vps-docker-clean.images.json`; absolute path for inventory mode and the lock base in every mode; parent directory must exist |
 
 Systemd reads the generated `.policy` first and overrides second. Change profile
 and cache budget through installer options, not by editing the generated file.
@@ -302,10 +356,10 @@ place supported custom settings in the operator override file or service drop-in
 `--strict`, the checker reports discrepancies without making them a failing exit
 status. On a real host it also reports timer state and free space on `/`; that
 space report does not validate the Docker filesystem free-space floor. It checks
-policy on disk, not inventory completeness, effective overrides, deployment lock
-participation or the running daemon's activation of that policy. No command
-validates the inventory alone: starting the service validates it and then
-performs cleanup.
+policy on disk, not tag availability, inventory completeness, effective overrides,
+deployment lock participation or the running daemon's activation of that policy.
+No command validates selected tags or the inventory alone: starting the service
+checks the selected mode's protection and then performs cleanup.
 
 To inspect effective cleanup policy settings without contacting Docker or pruning,
 use the default installation paths:
@@ -331,8 +385,9 @@ sudo journalctl -u vps-docker-clean.service -n 100 --no-pager
 A missing CLI, unreachable daemon or failed protection check produces a nonzero
 exit. A nonzero result from a prune or image-removal command is logged; cleanup
 tries the remaining candidates and categories, then reports failure. Inspection
-errors, timeouts and changed or expired protection stop the run. Earlier
-deletions are not rolled back. Each Docker command has a two-minute timeout; the service has a thirty-minute total timeout.
+errors, timeouts, missing selected tags and changed or expired inventories stop
+the run. Earlier deletions are not rolled back. Each Docker command has a
+two-minute timeout; the service has a thirty-minute total timeout.
 After a timeout, inspect actual state before assuming every deletion completed.
 
 ## Host policies
