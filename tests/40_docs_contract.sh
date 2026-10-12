@@ -21,7 +21,7 @@ grep -q '| Docker build cache | prune older than `168h`; reserve `1GB` when the 
 grep -q '| Docker containers/networks | prune unused older than `168h` |' "$readme"
 grep -q '| Docker images | prune unused older than `720h` |' "$readme"
 grep -q '| journald | `SystemMaxUse=300M`, `SystemKeepFree=1G`, `MaxRetentionSec=14day` |' "$readme"
-grep -q '| btmp | rotate at `50M`, keep 1 rotated file |' "$readme"
+grep -q '| btmp | rotate at `50M`, keep 1 compressed rotated file |' "$readme"
 grep -q '| APT cache | autoclean every 7 days, clean every 30 days |' "$readme"
 
 grep -Eq '"log-driver"[[:space:]]*:[[:space:]]*"local"' "$REPO_DIR/fixtures/docker/daemon-log-policy.json"
