@@ -11,7 +11,7 @@ repository supplies the reader of that inventory, not its publisher.
 
 ## Requirements and defaults
 
-Use a complete checkout on a Debian/Ubuntu-style systemd host with Python 3,
+Use a complete checkout on a Debian/Ubuntu-style systemd host with Python 3.11+,
 Docker CLI, logrotate, apt-config, the distro's APT periodic machinery, and standard shell
 utilities. Python is required for cleanup even with `--skip-docker-config`.
 Managed local build-cache limits require Docker Engine 28+ and a qualifying

@@ -12,6 +12,8 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import traceback
+from unittest.mock import patch
 
 repo = Path(sys.argv[1])
 with tempfile.TemporaryDirectory(prefix='auto-cleanup-json-', dir=os.environ['TMPDIR']) as scratch:
@@ -74,5 +76,50 @@ with tempfile.TemporaryDirectory(prefix='auto-cleanup-json-', dir=os.environ['TM
         else:
             raise AssertionError('occupied backup path was overwritten')
     assert not unrelated.exists()
+    def cleanup_failure(*args):
+        raise PermissionError('injected cleanup denial')
+    primary = OSError('injected replacement failure')
+    with patch.object(merger.os, 'replace', side_effect=primary), patch.object(merger.os, 'unlink', side_effect=cleanup_failure):
+        try:
+            merger.atomic_write(root / 'failed.json', '{}', 0o600, None)
+        except OSError as error:
+            assert error is primary
+            rendered = ''.join(traceback.format_exception(error))
+            assert 'injected replacement failure' in rendered and 'injected cleanup denial' in rendered
+            assert 'Could not remove temporary daemon file' in rendered
+        else:
+            raise AssertionError('replacement failure was hidden')
+    primary = OSError('injected backup copy failure')
+    with patch.object(merger.shutil, 'copyfileobj', side_effect=primary), patch.object(merger.os, 'unlink', side_effect=cleanup_failure):
+        try:
+            merger.copy_backup(daemon, root / 'failed-backup', (info.st_uid, info.st_gid))
+        except OSError as error:
+            assert error is primary
+            rendered = ''.join(traceback.format_exception(error))
+            assert 'injected backup copy failure' in rendered and 'injected cleanup denial' in rendered
+            assert 'Could not remove incomplete daemon backup' in rendered
+        else:
+            raise AssertionError('backup failure was hidden')
+    synced = root / 'sync-failure.json'
+    synced.write_text('old')
+    primary = OSError('injected directory sync failure')
+    real_fsync = merger.os.fsync
+    sync_calls = 0
+    def fail_directory_sync(descriptor):
+        global sync_calls
+        sync_calls += 1
+        if sync_calls == 2:
+            raise primary
+        return real_fsync(descriptor)
+    with patch.object(merger.os, 'fsync', side_effect=fail_directory_sync):
+        try:
+            merger.atomic_write(synced, 'new', 0o600, None)
+        except OSError as error:
+            assert error is primary and synced.read_text() == 'new'
+            rendered = ''.join(traceback.format_exception(error))
+            assert str(synced) in rendered and 'Replaced' in rendered
+            assert 'directory durability could not be confirmed' in rendered
+        else:
+            raise AssertionError('directory synchronization failure was hidden')
 print('daemon JSON boundaries ok')
 PY

@@ -82,6 +82,7 @@ def validate_policy(policy, path):
 def atomic_write(path, text, mode, owner):
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    replaced = False
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
@@ -91,17 +92,22 @@ def atomic_write(path, text, mode, owner):
             os.chown(tmp_name, owner[0], owner[1])
         os.chmod(tmp_name, mode)
         os.replace(tmp_name, path)
+        replaced = True
         # Persist the directory entry for the atomic replace on Linux filesystems.
         dir_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
         try:
             os.fsync(dir_fd)
         finally:
             os.close(dir_fd)
-    except Exception:
+    except Exception as error:
+        if replaced:
+            error.add_note(f"Replaced {path}; directory durability could not be confirmed.")
         try:
             os.unlink(tmp_name)
         except FileNotFoundError:
             pass
+        except OSError as cleanup_error:
+            error.add_note(f"Could not remove temporary daemon file {tmp_name}: {cleanup_error}")
         raise
 
 
@@ -132,11 +138,13 @@ def copy_backup(src, dst, owner):
             os.fsync(dir_fd)
         finally:
             os.close(dir_fd)
-    except BaseException:
+    except BaseException as error:
         try:
             os.unlink(dst)
         except FileNotFoundError:
             pass
+        except OSError as cleanup_error:
+            error.add_note(f"Could not remove incomplete daemon backup {dst}: {cleanup_error}")
         raise
 
 
