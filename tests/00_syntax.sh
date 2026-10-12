@@ -21,6 +21,7 @@ for script in \
     "$REPO_DIR/tests/30_functionality.sh" \
     "$REPO_DIR/tests/34_daemon_json.sh" \
     "$REPO_DIR/tests/35_profiles.sh" \
+    "$REPO_DIR/tests/38_policy_integrity.sh" \
     "$REPO_DIR/tests/37_image_retention.sh" \
     "$REPO_DIR/tests/36_install_progress.sh" \
     "$REPO_DIR/tests/40_docs_contract.sh" \

@@ -296,7 +296,9 @@ Check installed files and expected policy without cleanup:
 sudo ./scripts/check.sh --strict
 ```
 
-Use the same component skip flags and custom paths as installation. Without
+Use the same component skip flags and custom paths as installation. Repo-owned
+configuration files must match their source fixtures or rendered templates;
+place supported custom settings in the operator override file or service drop-ins. Without
 `--strict`, the checker reports discrepancies without making them a failing exit
 status. On a real host it also reports timer state and free space on `/`; that
 space report does not validate the Docker filesystem free-space floor. It checks

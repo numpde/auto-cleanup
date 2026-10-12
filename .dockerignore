@@ -78,3 +78,4 @@ tests/lib/**
 !tests/fixtures/fake-retention-docker.py
 !tests/fixtures/image-protection.json
 !tests/34_daemon_json.sh
+!tests/38_policy_integrity.sh

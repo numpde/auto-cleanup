@@ -12,6 +12,7 @@ for test_script in \
     "$SCRIPT_DIR/30_functionality.sh" \
     "$SCRIPT_DIR/34_daemon_json.sh" \
     "$SCRIPT_DIR/35_profiles.sh" \
+    "$SCRIPT_DIR/38_policy_integrity.sh" \
     "$SCRIPT_DIR/37_image_retention.sh" \
     "$SCRIPT_DIR/36_install_progress.sh"
 do

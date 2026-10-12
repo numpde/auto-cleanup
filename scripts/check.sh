@@ -190,21 +190,30 @@ override_file=$(target "$ETC_DIR/default/vps-docker-clean")
 if [ -e "$override_file" ]; then
     echo "info    Operator overrides at $override_file may change runtime ages; systemd reads this file."
 fi
+CHECK_RENDERED=
+trap 'rm -f "$CHECK_RENDERED"' EXIT INT TERM
+
+matches_rendered_unit() {
+    installed=$1
+    template=$2
+    shift 2
+    CHECK_RENDERED=$(mktemp) || return 1
+    if sed "$@" "$template" > "$CHECK_RENDERED" && cmp -s "$CHECK_RENDERED" "$installed"; then
+        match_status=0
+    else
+        match_status=1
+    fi
+    rm -f "$CHECK_RENDERED"
+    CHECK_RENDERED=
+    return "$match_status"
+}
+
 service_file=$(target "$ETC_DIR/systemd/system/vps-docker-clean.service")
 timer_file=$(target "$ETC_DIR/systemd/system/vps-docker-clean.timer")
 check_file "$service_file"
 if is_plain_file "$service_file"; then
-    # Systemd applies later environment files last; presence alone cannot prove precedence.
-    expected_environment_files=$(printf '%s\n' \
-        "EnvironmentFile=$ETC_DIR/default/vps-docker-clean.policy" \
-        "EnvironmentFile=-$ETC_DIR/default/vps-docker-clean")
-    if grep -Fxq "ConditionFileIsExecutable=$PREFIX/sbin/vps-docker-clean" "$service_file" &&
-        grep -Fxq "Type=oneshot" "$service_file" &&
-        [ "$(sed -n '/^EnvironmentFile=/p' "$service_file")" = "$expected_environment_files" ] &&
-        grep -Fxq "ExecStart=$PREFIX/sbin/vps-docker-clean" "$service_file" &&
-        grep -Fxq "Nice=10" "$service_file" &&
-        grep -Fxq "IOSchedulingClass=idle" "$service_file" &&
-        grep -Fxq "TimeoutStartSec=30min" "$service_file"; then
+    if matches_rendered_unit "$service_file" "$REPO_DIR/fixtures/systemd/vps-docker-clean.service" \
+        -e "s|@SBIN_DIR@|$PREFIX/sbin|g" -e "s|@ETC_DIR@|$ETC_DIR|g"; then
         echo "ok      systemd service policy"
     else
         echo "bad     systemd service policy"
@@ -213,10 +222,8 @@ if is_plain_file "$service_file"; then
 fi
 check_file "$timer_file"
 if is_plain_file "$timer_file"; then
-    if [ "$POLICY_VALID" -eq 1 ] && grep -Fxq "OnCalendar=$SCHEDULE" "$timer_file" &&
-        grep -q '^Persistent=true$' "$timer_file" &&
-        grep -q '^RandomizedDelaySec=1h$' "$timer_file" &&
-        grep -q '^AccuracySec=1h$' "$timer_file"; then
+    if [ "$POLICY_VALID" -eq 1 ] && matches_rendered_unit "$timer_file" \
+        "$REPO_DIR/fixtures/systemd/vps-docker-clean.timer" "s|@SCHEDULE@|$SCHEDULE|g"; then
         echo "ok      systemd timer policy"
     else
         echo "bad     systemd timer policy"
@@ -227,10 +234,7 @@ if [ "$SKIP_JOURNALD" -eq 0 ]; then
     journald_conf=$(target "$ETC_DIR/systemd/journald.conf.d/auto-cleanup-limits.conf")
     check_file "$journald_conf"
     if is_plain_file "$journald_conf"; then
-        if grep -q '^\[Journal\]$' "$journald_conf" &&
-            grep -q '^SystemMaxUse=300M$' "$journald_conf" &&
-            grep -q '^SystemKeepFree=1G$' "$journald_conf" &&
-            grep -q '^MaxRetentionSec=14day$' "$journald_conf"; then
+        if cmp -s "$REPO_DIR/fixtures/journald/limits.conf" "$journald_conf"; then
             echo "ok      journald limit policy"
         else
             echo "bad     journald limit policy"
@@ -242,9 +246,7 @@ if [ "$SKIP_APT_PERIODIC" -eq 0 ]; then
     apt_periodic=$(target "$ETC_DIR/apt/apt.conf.d/90auto-cleanup-periodic")
     if is_plain_file "$apt_periodic"; then
         echo "ok      $apt_periodic"
-        if grep -q 'APT::Periodic::Update-Package-Lists "1";' "$apt_periodic" &&
-            grep -q 'APT::Periodic::AutocleanInterval "7";' "$apt_periodic" &&
-            grep -q 'APT::Periodic::CleanInterval "30";' "$apt_periodic"; then
+        if cmp -s "$REPO_DIR/fixtures/apt/10periodic-cleanup" "$apt_periodic"; then
             echo "ok      APT periodic cleanup policy"
         else
             echo "bad     APT periodic cleanup policy"
@@ -287,10 +289,7 @@ if [ "$SKIP_BTMP_LOGROTATE" -eq 0 ]; then
     btmp_logrotate=$(target "$ETC_DIR/logrotate.d/auto-cleanup-btmp")
     if is_plain_file "$btmp_logrotate"; then
         echo "ok      $btmp_logrotate"
-        if grep -q '^/var/log/btmp {' "$btmp_logrotate" &&
-            grep -q '^[[:space:]]*maxsize 50M$' "$btmp_logrotate" &&
-            grep -q '^[[:space:]]*rotate 1$' "$btmp_logrotate" &&
-            grep -q '^[[:space:]]*create 0660 root utmp$' "$btmp_logrotate"; then
+        if cmp -s "$REPO_DIR/fixtures/logrotate/btmp" "$btmp_logrotate"; then
             echo "ok      btmp logrotate policy"
         else
             echo "bad     btmp logrotate policy"
