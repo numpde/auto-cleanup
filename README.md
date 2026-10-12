@@ -1,51 +1,40 @@
 # auto-cleanup
 
-Docker disk cleanup profiles for a small VPS or a development workstation.
-Requires Python 3 for retention and Docker Engine 28 or newer for managed native build-cache GC.
+Install disk-retention policies for a Linux Docker host: image, container and
+network cleanup; local build-cache and log limits; journald retention; failed-login
+log rotation; and APT cache cleanup.
 
-Use this repo when you want predictable limits for common disk-growth sources
-without installing broad cleanup jobs that might remove data you still care
-about. The installer writes only the files needed for:
+The cleanup service protects images referenced by containers and images explicitly
+retained for deployment, rollback or recovery. **Before enabling it, configure
+deployment tooling to supply the protection inventory described below.** This
+repository supplies the reader of that inventory, not its publisher.
 
-- Docker log caps through `/etc/docker/daemon.json`
-- Profile-based Docker pruning through a systemd timer
-- Native BuildKit cache budgets for the local Docker builder
-- journald size/retention limits
-- size-based `/var/log/btmp` rotation
-- APT periodic cleanup
+## Requirements and defaults
 
-It does not automate Docker volume pruning or temp-directory cleanup. Docker
-volumes can hold application data, so they are left for an operator to prune
-manually. Temporary directories are already handled by the distro's
-`systemd-tmpfiles-clean.timer` on systemd hosts.
+Use a complete checkout on a Debian/Ubuntu-style systemd host with Python 3,
+Docker CLI, logrotate, the distro's APT periodic machinery, and standard shell
+utilities. Python is required for cleanup even with `--skip-docker-config`.
+Managed local build-cache limits require Docker Engine 28+ and a qualifying
+`dockerd` binary on a real host; staging without `dockerd` reports that target
+requirement.
 
-Choose `vps` to prioritize disk space or `workstation` to retain more build
-cache. A fresh install defaults to `vps`; reinstalling without `--profile`
-preserves the saved selection and cache budget. An explicit `--profile` applies
-that profile's defaults, with `--cache-gib N` taking precedence for the budget.
+Cleanup always selects the rootful local daemon at
+`unix:///var/run/docker.sock`, ignoring ambient Docker context, host and TLS
+settings. The daemon configuration applies to its default `docker` builder.
+Custom Buildx builders, remote builders and rootless Docker require their own
+configuration. CI manages its builders' cache retention.
 
 | Docker policy | `vps` (default) | `workstation` |
 | --- | --- | --- |
 | Native build-cache budget | 1 GiB | 40 GiB |
-| Scheduled pruning | Daily | Weekly |
+| Scheduled cleanup | Daily | Weekly |
 | Unprotected images without container references | Created over 24 hours ago | Created over 14 days ago |
 | Disposable stopped containers | Created over 24 hours ago | Created over 7 days ago |
 | Unreferenced networks | Created over 24 hours ago | Created over 7 days ago |
 
-Only containers carrying the label `auto-cleanup.disposable=true` are eligible.
-Apply it only to containers whose writable files and logs may be deleted, for
-example disposable test tasks. Ordinary service containers are preserved,
-including when stopped or failed. Volumes are never pruned.
-
-Image age is **creation age**, not time since last use or download. Deployment
-publishes the current, rollback and recovery repository digests to protect;
-container references are protected too, including stopped containers and
-containers removed by this run. Tags and Compose files alone do not protect an
-image. Missing or invalid deployment protection blocks cleanup with a nonzero
-exit, including on a fresh install. Prepare the inventory before enabling the
-timer. See [host image retention](#host-image-retention).
-
-Shared policy:
+A fresh installation selects `vps`. Reinstalling without `--profile` preserves
+the saved profile and cache budget. Explicit `--profile` selects that profile's
+defaults; `--cache-gib N` overrides its cache budget.
 
 | Area | Default |
 | --- | --- |
@@ -54,328 +43,267 @@ Shared policy:
 | btmp | rotate at `50M`, keep 1 compressed rotated file |
 | APT cache | autoclean every 7 days, clean every 30 days |
 
-This repo intentionally does not install jobs that run:
+These are retention targets, not disk quotas. Shared layers, active cache,
+application data and other filesystem users may prevent enough space being freed.
+No disk alerting service is installed.
 
-- `docker system prune --volumes`
-- `docker volume prune`
-- direct deletion under `/var/lib/docker`
-- direct deletion of APT/dpkg locks
+This repo does not install jobs that run `docker system prune --volumes` or
+`docker volume prune`, perform direct deletion under `/var/lib/docker`, or delete
+APT/dpkg locks. Volumes are never pruned. Temporary-file cleanup remains with
+the distro's existing machinery.
 
-## Install
+## Prepare and install
 
-The normal workflow is: review the planned writes, stage them under a
-temporary root if you want to inspect the file tree, then install on the host.
-
-Review the plan first. Dry-run does not install files, but it still parses the
-existing Docker daemon JSON and the repo policy when Docker config management
-is enabled:
+### 1. Review the intended changes
 
 ```sh
-./scripts/install.sh --dry-run
-./scripts/install.sh --profile workstation --dry-run
+./scripts/install.sh --dry-run --no-enable-timer
+./scripts/install.sh --profile workstation --dry-run --no-enable-timer
 ```
 
-For a file-tree preview that does not touch the host, use the staged install
-flow below.
-
-Install on a VPS:
-
-```sh
-sudo ./scripts/install.sh
-# Or select the workstation defaults:
-sudo ./scripts/install.sh --profile workstation
-# Override the selected profile's cache budget:
-sudo ./scripts/install.sh --cache-gib 8
-```
-
-You can run `--dry-run` and `--root` without sudo. Repository tests are
-container-only; use `make test` for the default lane or `make test/all` for the
-full local suite. Use sudo only for a real install or uninstall against `/etc`,
-`/usr/local`, and systemd.
-
-By default, a real install writes to these Linux locations:
-
-- `/usr/local/sbin/vps-docker-clean`
-- `/etc/systemd/system/vps-docker-clean.{service,timer}`
-- `/etc/default/vps-docker-clean.policy` (generated profile settings)
-- `/etc/systemd/journald.conf.d/auto-cleanup-limits.conf`
-- `/etc/logrotate.d/auto-cleanup-btmp`, only when no active-looking existing
-  size-based btmp policy is found
-- `/etc/apt/apt.conf.d/90auto-cleanup-periodic`, only when no active-looking
-  existing cleanup policy is found
-- `/etc/docker/daemon.json`
-
-When service actions are enabled, the installer runs `systemctl daemon-reload`,
-enables `vps-docker-clean.timer`, and restarts `systemd-journald` if the
-journald fixture was installed. Docker is restarted only when you pass
-`--restart-docker`. That is an immediate Docker service restart; expect running
-containers to be interrupted according to your Docker/systemd restart policy.
-
-The installer announces each service command before waiting for it and reports
-completion only when the command succeeds. Docker startup can take time; while
-the installer waits, follow its logs in another terminal with
-`sudo journalctl -fu docker.service`. A failed Docker restart restores the
-previous daemon configuration and attempts one recovery restart. Recovery is
-reported separately: the installation still fails, and other installed files
-and earlier service changes remain.
-
-The Docker daemon config is merged as JSON and backed up before modification.
-Unrelated daemon and `builder` keys are preserved. The complete `builder.gc`
-section is replaced with an enabled, size-based rule using the selected budget
-and zero reserved cache. Existing custom GC rules are replaced deliberately.
-`log-driver` and `log-opts` are
-replaced by the exact repo policy: `local` with `max-size=10m`,
-`max-file=3`, and `compress=true`. Existing file mode and ownership are
-preserved when `daemon.json` is rewritten. Existing containers must still be
-recreated before they use the new logging driver. The installer does not
-restart Docker by default. If `/etc/docker/daemon.json` is a symlink, the
-installer refuses to replace it; merge that case manually.
-
-When `dockerd` is available, real installs prevalidate the would-be merged
-daemon JSON before replacing `/etc/docker/daemon.json`; strict checks validate
-the installed daemon JSON. `dockerd --validate --config-file` validates the
-config file itself, but it cannot prove that the host's Docker service command
-line has no duplicate flags. If your Docker service starts `dockerd` with
-`--log-driver` or `--log-opt`, remove those flags or merge the logging policy
-manually before restarting Docker.
-
-For files owned by this repo, the installer also refuses to replace symlink or
-non-regular destinations, and refuses destination paths whose existing parent
-directories are symlinks. Move or resolve those manually before installing.
-
-Common install switches:
-
-- `--root DIR` stages under another root for tests or image builds.
-- `--profile vps|workstation` selects defaults explicitly.
-- `--cache-gib N` sets a positive whole-GiB cache budget (maximum 8589934591).
-- `--prefix DIR` changes where the cleanup executable is installed.
-- `--etc-dir DIR` changes the configuration root.
-- `--skip-docker-config` leaves Docker daemon configuration untouched; neither
-  cache GC nor logging is managed by this installation.
-- `--skip-journald` leaves journald configuration untouched.
-- `--skip-btmp-logrotate` leaves btmp rotation untouched.
-- `--skip-apt-periodic` leaves APT periodic cleanup untouched.
-- `--restart-docker` restarts Docker immediately after updating daemon config;
-  this can interrupt running containers.
-- `--no-enable-timer` installs the timer without enabling it.
-- `--no-service-actions` skips all `systemctl` calls for file-only installs.
-
-Use `--no-service-actions` when staging inside images, containers, rescue
-environments, or any host where `systemctl` is present but systemd is not
-usable as the service manager. Service actions are skipped automatically with
-`--root` or a custom `--etc-dir`, because systemd only discovers units from its
-configured system directories.
-
-Custom `--root`, `--prefix`, and `--etc-dir` values must be absolute paths
-other than `/`, must not start with `//`, must not contain `.` or `..` path
-components, and must not contain whitespace, `&`, `|`, backslashes, `%`, `#`,
-`;`, `$`, quotes, or backticks.
-
-Script dependencies are intentionally small: POSIX `/bin/sh` and standard tools
-such as `install`, `sed`, `grep`, and `awk`. Run scripts from a complete
-checkout so `scripts/lib/common.sh` is available. Python 3 is required only when
-Docker daemon JSON management is enabled.
-
-At runtime, the installed policy assumes a systemd-based host with logrotate
-and the distro's APT periodic timer machinery available.
-
-After install, restart Docker unless you used `--restart-docker`. This activates
-the native cache budget and new logging defaults. Existing containers must
-additionally be recreated to adopt the logging defaults; recreation is not
-needed for cache GC. For Compose-managed workloads, run the Compose
-command from each workload's own Compose project directory:
-
-```sh
-sudo systemctl restart docker
-docker compose up -d --force-recreate
-```
-
-## Staged Install
-
-Use `--root` when you want to inspect the install tree or validate an image
-build without changing the running host:
+Dry-run installs no files, but still parses existing daemon JSON when Docker
+configuration is managed. For a file-tree preview, stage under a temporary root:
 
 ```sh
 ./scripts/install.sh --root /tmp/auto-cleanup-root
+./scripts/check.sh --root /tmp/auto-cleanup-root --strict
 find /tmp/auto-cleanup-root -type f -print
 ```
 
-With `--root`, service actions are skipped automatically, and generated paths
-are placed under the staged root while preserving their normal absolute layout.
+Staging preserves the normal absolute layout beneath that root and skips service
+actions. Dry-run and staging can run without sudo.
 
-## Uninstall
+### 2. Prepare image protection and existing schedules
 
-```sh
-sudo ./scripts/uninstall.sh
-```
+Configure your deployment tooling to publish [the protection inventory](#image-protection)
+and use its shared lock before enabling cleanup. An absent or invalid inventory
+blocks the entire cleanup service, including container and network pruning.
 
-Useful uninstall switches:
+When replacing an existing cleanup schedule, disable its image-pruning jobs and
+wait for any active run to finish before preparing the replacement. Use one host
+image-retention schedule. Stop an already active `vps-docker-clean.timer` before
+changing its installation; `--no-enable-timer` does not stop it.
 
-- `--dry-run` prints intended removals without removing files.
-- `--root DIR`, `--prefix DIR`, and `--etc-dir DIR` match install paths.
-- `--restore-docker-backup FILE` restores an explicit daemon backup.
-- `--skip-journald`, `--skip-btmp-logrotate`, and `--skip-apt-periodic`
-  leave those optional policies in place.
-- `--no-service-actions` skips all `systemctl` calls for file-only removal.
-
-As with install, uninstall skips service actions automatically with `--root` or
-a custom `--etc-dir`.
-
-Uninstall removes the files installed by this repo, including the generated
-`.policy` file, and disables the timer. It preserves the operator-owned
-`/etc/default/vps-docker-clean` override file. It
-does not edit `/etc/docker/daemon.json` by default because that file may contain
-unrelated daemon configuration. The install script creates timestamped backups
-beside the daemon file, preserving file mode and ownership, named like:
-
-```text
-/etc/docker/daemon.json.auto-cleanup.bak.20260705T175500Z
-```
-
-For repo-owned paths, uninstall removes regular files and symlinks but refuses
-unexpected non-regular destinations such as directories.
-
-When service actions are enabled, uninstall runs `systemctl disable --now` for
-the timer, runs `systemctl daemon-reload`, and restarts `systemd-journald`
-unless journald removal was skipped.
-
-To restore a Docker daemon backup explicitly:
+### 3. Install without enabling cleanup
 
 ```sh
-sudo ./scripts/uninstall.sh \
-  --restore-docker-backup /etc/docker/daemon.json.auto-cleanup.bak.YYYYMMDDTHHMMSSZ
+sudo ./scripts/install.sh --no-enable-timer
+# Or select workstation defaults and a cache budget:
+sudo ./scripts/install.sh --profile workstation --cache-gib 8 --no-enable-timer
+sudo ./scripts/check.sh --strict
 ```
 
-Backup restore uses `cp -p`, preserving backup file mode, ownership, and
-timestamps where permitted. The backup path must be absolute and must refer to
-a regular file, not a symlink. The restore destination
-`/etc/docker/daemon.json` must not be a symlink or other non-regular file.
-When `--root` is used, the backup path is still read from the current
-filesystem; only the restore destination is staged under `--root`.
+The default destinations are:
 
-After restoring a Docker daemon backup on a real host, restart Docker and
-recreate affected containers when convenient so the restored daemon settings are
-actually in use.
+| File | Purpose |
+| --- | --- |
+| `/usr/local/sbin/vps-docker-clean` | Cleanup executable |
+| `/etc/systemd/system/vps-docker-clean.{service,timer}` | Service and schedule |
+| `/etc/default/vps-docker-clean.policy` | Generated profile settings |
+| `/etc/docker/daemon.json` | Docker logging and local cache GC |
+| `/etc/systemd/journald.conf.d/auto-cleanup-limits.conf` | Journal limits |
+| `/etc/logrotate.d/auto-cleanup-btmp` | Conditional btmp policy |
+| `/etc/apt/apt.conf.d/90auto-cleanup-periodic` | Conditional APT policy |
 
-## Install btmp rotation only
+The installer preserves an existing operator override file and does not create
+the protection inventory. Review existing btmp and APT policy before installing;
+use their skip flags when those policies are managed elsewhere. Detection rules
+are described under [host policies](#host-policies).
 
-For a Debian/Ubuntu systemd host needing only failed-login log rotation, install
-`logrotate` and use `fixtures/logrotate/btmp` as `/etc/logrotate.d/btmp`.
-Back up the previous policy outside `/etc/logrotate.d` and confirm there is only
-one active stanza for `/var/log/btmp`; do not install a second
-`auto-cleanup-btmp` stanza. This manual lane leaves Docker, journald, and APT
-cleanup policy untouched.
+With service actions enabled, installation reloads systemd and restarts journald
+unless skipped. Without `--no-enable-timer`, it also enables and starts the timer.
+The timer is persistent: it can catch up a missed run immediately, adds up to an
+hour of randomized delay, and uses `AccuracySec=1h`.
 
-Install `examples/logrotate.timer.d/hourly.conf` as
-`/etc/systemd/system/logrotate.timer.d/hourly.conf`, run
-`logrotate --debug /etc/logrotate.conf`, then reload systemd, enable/restart
-`logrotate.timer`, and start `logrotate.service` once. Use a normal service run,
-not forced rotation of all package logs. The drop-in schedules the distro's
-logrotate service hourly and therefore also checks its other log policies hourly.
-It is a manual example, not installed by `scripts/install.sh`.
+Docker is restarted only with `--restart-docker`. Otherwise daemon changes remain
+on disk until a restart. If Docker configuration was managed, arrange a restart
+to activate the cache budget and logging defaults. Existing containers need
+recreation only to adopt those logging defaults. These actions can interrupt
+workloads; run Compose commands from each workload's own project directory.
 
-The btmp policy rotates monthly or when an hourly check sees more than `50M`,
-retains one compressed archive, and creates the replacement with mode `0660`
-and owner `root:utmp`. Growth between checks can exceed `50M`; this is not a
-hard disk quota. The first run compresses the existing large log, so confirm
-free space for compression before starting it. Check the service result, the
-next timer trigger, and the active and archived btmp file sizes afterwards.
+A failed installer-requested Docker restart restores the previous daemon JSON
+and attempts one recovery restart. Recovery is reported separately; installation
+still fails, and earlier file and service changes remain. Follow a slow restart
+with `sudo journalctl -fu docker.service`.
 
-## Notes
+### 4. Inspect and enable
 
-The installer avoids replacing distro-owned logrotate files. If any file under
-the selected `logrotate.d` directory already has an active-looking stanza that
-includes `/var/log/btmp` and `maxsize 50M`, the btmp fixture is skipped. A
-distro btmp stanza without that size cap does not block installation of the
-repo-owned fixture.
+Review the profile and override files, confirm the protection publisher and lock
+participation are configured, and use the [inspection commands](#inspect-and-run)
+below. Installed policy checks do not validate the protection inventory or prove
+that daemon changes are active.
 
-`check.sh --strict` accepts an existing btmp policy only when an active-looking
-stanza that includes `/var/log/btmp` also includes `maxsize 50M`.
-
-If you intentionally keep distro-owned btmp rotation elsewhere, either add the
-size cap there or install with `--skip-btmp-logrotate`.
-
-The installer also avoids overriding existing active APT cleanup policy. If the
-selected `apt.conf.d` directory already has a positive `AutocleanInterval` or
-`CleanInterval`, or the APT-supported value `"always"`, the APT fixture is
-skipped. Update-only periodic settings or disabled cleanup intervals do not
-block installation of the repo-owned cleanup policy.
-
-APT cleanup is delegated to the distro's existing apt timers and
-`apt.systemd.daily`; this repo only installs the periodic policy file.
-
-`check.sh --strict` accepts existing APT config only when it includes a
-positive cleanup interval such as `AutocleanInterval "7";` or
-`CleanInterval "30";`, or the APT-supported value `"always"`.
-
-If you intentionally manage APT cleanup elsewhere, either set an active cleanup
-interval there or install with `--skip-apt-periodic`.
-
-Docker's native garbage collector manages cache periodically during builder
-operation, independently of the image/container/network timer. It can reclaim
-recent unused cache when the budget is exceeded; there is no seven-day age
-exemption. The budget is a GC target, not a disk quota. In-use cache and retained
-image layers can prevent immediate recovery of space.
-
-This installation manages the default `docker` builder and the rootful local
-daemon at `unix:///var/run/docker.sock`. It does not manage custom Buildx
-builders, remote engines, or rootless Docker. Scheduled pruning explicitly
-selects that local socket, ignoring ambient Docker host/context/TLS settings.
-Docker Engine 28+ is required because older engines may silently ignore the
-cache maximum. A real managed-Docker install requires a qualifying `dockerd`
-binary; a staged install without it reports the target requirement.
-
-No cleanup policy guarantees a disk will never fill. Database contents, uploads,
-other application data and non-Docker files need their own limits and disk
-monitoring. This repository does not install a disk alerting service.
-
-Individual Docker command failures are reported, but the cleanup script still
-attempts the remaining safe categories before exiting nonzero. Invalid or expired
-protection stops further deletion immediately. That keeps
-one failed cleanup area from preventing the rest of the scheduled cleanup.
-
-If the Docker CLI is missing or the local daemon is unreachable, the cleanup
-script exits nonzero so systemd records the failed cleanup.
-
-The timer uses the profile's daily or weekly schedule, adds up to one hour of
-randomized delay, and allows coalescing within `AccuracySec=1h`. Its persistent
-timer can catch up a missed run when enabled; installation can therefore lead
-to pruning soon after the timer starts. Use `--no-enable-timer` to install
-without enabling it on a fresh host. It does not stop an already active timer.
-
-The installed cleanup script accepts these optional environment overrides.
-`DOCKER` must be an executable name or path, not a command line with arguments.
-The override file is loaded by systemd as an `EnvironmentFile`; it is not a
-shell script, and shell expansions or extra command arguments are not evaluated.
-
-- `DOCKER`, default `docker`
-- `CONTAINER_UNTIL`, profile default
-- `NETWORK_UNTIL`, profile default
-- `IMAGE_UNTIL`, profile default
-- `IMAGE_MIN_FREE_GIB`, default `0` (no space-pressure eviction)
-- `IMAGE_PROTECTION_FILE`, default `/etc/default/vps-docker-clean.images.json`
-
-Age overrides must be positive whole hours, such as `48h`. Systemd reads the
-generated `.policy` file first and the operator override file second. Do not
-edit the generated file or override profile/cache fields through the runtime
-environment: use the installer options. The removed `BUILD_CACHE_UNTIL`,
-`BUILD_CACHE_RESERVED`, and `ALLOW_BUILDX_PRUNE` settings are rejected; remove
-them from an existing override file before upgrading.
-
-For timer runs, place overrides in `/etc/default/vps-docker-clean`, for example:
+Once ready:
 
 ```sh
+sudo systemctl enable --now vps-docker-clean.timer
+sudo systemctl status vps-docker-clean.timer
+sudo journalctl -u vps-docker-clean.service -n 100 --no-pager
+```
+
+Inspect the first service result and actual filesystem free space.
+
+### Installation options
+
+Run `./scripts/install.sh --help` for the complete CLI.
+
+| Option | Effect |
+| --- | --- |
+| `--profile vps\|workstation` | Select profile defaults |
+| `--cache-gib N` | Positive whole-GiB cache budget, up to 8589934591 |
+| `--skip-docker-config` | Leave Docker logging and native cache GC unmanaged |
+| `--skip-journald` | Leave journald policy unmanaged |
+| `--skip-btmp-logrotate` | Leave btmp policy unmanaged |
+| `--skip-apt-periodic` | Leave APT policy unmanaged |
+| `--restart-docker` | Restart Docker during installation |
+| `--no-enable-timer` | Do not enable or start the timer |
+| `--no-service-actions` | Skip all systemctl calls |
+| `--root DIR` | Stage beneath another root |
+| `--prefix DIR` | Change executable prefix, default `/usr/local` |
+| `--etc-dir DIR` | Change configuration root, default `/etc` |
+
+Use `--no-service-actions` for file-only installation where systemd is unavailable.
+Service actions are automatically skipped with `--root` or custom `--etc-dir`.
+Custom paths must be absolute, exclude `/`, `//` prefixes and dot components,
+and contain no whitespace or shell/template metacharacters. The scripts reject
+unsupported paths before writing.
+
+## Image protection
+
+Docker reveals which images existing containers reference. It cannot decide which
+unused image you intend to retain for a future deployment, rollback or recovery.
+Your deployment tooling supplies those choices; cleanup applies the host's image
+age and space policy to the remaining images.
+
+The default inventory path is `/etc/default/vps-docker-clean.images.json`. No
+publisher or deployment lock participant is included here. Deployment tooling
+must publish the complete inventory, renew its expiry through reconciliation,
+and coordinate image/container changes through the lock below. Renewal must
+continue even when no new deployment occurs. Cleanup cannot discover an omitted
+rollback requirement.
+
+The following shows the format; replace all placeholders, including expiry,
+with real values before use:
+
+```json
+{
+  "version": 1,
+  "daemon_id": "REPLACE_WITH_LOCAL_DOCKER_ID",
+  "expires_at": "REPLACE_WITH_FUTURE_TIMESTAMP_WITH_TIMEZONE",
+  "deployments": {
+    "app": {
+      "current": ["registry.example/app@sha256:REPLACE_WITH_64_HEX_DIGEST"],
+      "rollback": []
+    }
+  },
+  "recovery": []
+}
+```
+
+Obtain the daemon identity with:
+
+```sh
+sudo docker --host unix:///var/run/docker.sock info --format '{{.ID}}'
+```
+
+Inspect each intended image, replacing `IMAGE_REFERENCE` with its real reference:
+
+```sh
+sudo docker --host unix:///var/run/docker.sock image inspect IMAGE_REFERENCE
+```
+
+Use the immutable repository digests in `RepoDigests`. Every listed digest must
+resolve locally to that same digest. Remote-only images do
+not count as retained local recovery. The inventory must name at least one deployment. Each deployment needs a
+nonempty `current` list; `rollback` and `recovery` may be empty when none are deliberately retained.
+Timestamps require a timezone, for example `2030-01-01T00:00:00Z`.
+
+Keep the inventory and its adjacent `.lock` file owned by root for the installed
+service as regular files, not symlinks, without group or other write permission;
+use mode `0600`. Missing,
+expired, malformed, insecure or wrong-daemon inventories block cleanup. Duplicate
+JSON keys and unknown fields are rejected. The maximum inventory size is 1 MiB.
+
+All deployment publishers and cleanup invocations must use one inventory path
+for the daemon and the same stable lock file: `IMAGE_PROTECTION_FILE` plus
+`.lock`. Hold an exclusive `flock` before pulling images or changing containers
+and through atomic publication of the final inventory. Write a temporary file in
+the same directory and rename it while holding the lock; never replace or
+unlink the lock file. Before dropping old container references, publish the
+union of current, incoming and rollback digests after they resolve locally.
+
+Cleanup fails promptly if the lock is busy and rechecks inventory bytes and
+expiry immediately before each mutation. Docker clients that ignore this lock
+can still race cleanup; deployment tooling must participate.
+
+Container image IDs are protected automatically, including stopped containers
+and the references captured before disposable-container pruning. An absent
+container source image does not block unrelated cleanup. Explicitly listed
+inventory digests must still exist locally.
+
+## Cleanup policy and overrides
+
+Only stopped containers labelled `auto-cleanup.disposable=true` are eligible for
+container pruning. Apply that label only when their writable files and logs may
+be deleted. Ordinary containers remain retained, including stopped or failed ones.
+All age thresholds measure creation age, not time since last use or download.
+Tags and Compose files alone do not protect an image.
+
+Image cleanup considers the oldest images first, preserving inventory and
+container protection. An unprotected image older than `IMAGE_UNTIL` is eligible
+regardless of free space. When `IMAGE_MIN_FREE_GIB` is nonzero, space pressure
+may also evict younger unprotected images until that free-space floor is reached.
+Available bytes are measured on Docker's reported root filesystem; shared image
+sizes and Docker's reclaimable estimate are not counted as released bytes.
+Protected images are never removed to meet the floor. An unmet floor produces
+failure rather than permission to delete protected images or other data.
+
+Images are removed by full local ID without force or implicit parent pruning.
+Docker may refuse removal of an image with multiple tags; cleanup retains it and
+reports failure. See [Docker image removal](https://docs.docker.com/reference/cli/docker/image/rm/).
+
+For service runs, place optional overrides in `/etc/default/vps-docker-clean`:
+
+```ini
 IMAGE_UNTIL=168h
+IMAGE_MIN_FREE_GIB=5
 ```
 
-See `fixtures/default/vps-docker-clean.example` for a commented template.
+This is a systemd EnvironmentFile, not a shell script; shell expansions are not
+evaluated. `DOCKER` must name one executable, not a command line with arguments.
+See [the override template](fixtures/default/vps-docker-clean.example).
 
-The installer preserves an existing override file and does not create one.
+| Setting | Default and accepted values |
+| --- | --- |
+| `DOCKER` | `docker`; an executable name or path |
+| `CONTAINER_UNTIL`, `NETWORK_UNTIL`, `IMAGE_UNTIL` | Profile defaults; positive whole hours such as `48h`, without leading zeros |
+| `IMAGE_MIN_FREE_GIB` | `0` disables pressure; nonnegative whole GiB without leading zeros |
+| `IMAGE_PROTECTION_FILE` | `/etc/default/vps-docker-clean.images.json`; absolute path |
 
-Installation and `check.sh` display managed defaults, not evaluated operator
-overrides or proof of the running daemon's configuration. To inspect the two
-installed environment files through systemd without pruning, use this command
-for the default installation paths:
+Systemd reads the generated `.policy` first and overrides second. Change profile
+and cache budget through installer options, not by editing the generated file.
+Obsolete `BUILD_CACHE_UNTIL`, `BUILD_CACHE_RESERVED` and `ALLOW_BUILDX_PRUNE`
+overrides are rejected; remove them before upgrading.
+
+## Inspect and run
+
+Check installed files and expected policy without cleanup:
+
+```sh
+sudo ./scripts/check.sh --strict
+```
+
+Use the same component skip flags and custom paths as installation. Without
+`--strict`, the checker reports discrepancies without making them a failing exit
+status. On a real host it also reports timer state and free space on `/`; that
+space report does not validate the Docker filesystem free-space floor. It checks
+policy on disk, not inventory completeness, effective overrides, deployment lock
+participation or the running daemon's activation of that policy. No command
+validates the inventory alone: starting the service validates it and then
+performs cleanup.
+
+To inspect effective cleanup policy settings without contacting Docker or pruning,
+use the default installation paths:
 
 ```sh
 sudo systemd-run --wait --pipe --collect \
@@ -384,178 +312,124 @@ sudo systemd-run --wait --pipe --collect \
   /usr/local/sbin/vps-docker-clean --show-policy
 ```
 
-This creates a temporary service that prints the effective ages and container
-selector without contacting Docker. It reads the managed file and then the
-operator override file, but does not inherit custom drop-ins on the cleanup
-service. Adjust paths for a custom installation. Direct `--show-policy` execution
-also works when the three age variables are explicitly supplied.
+This temporary service reads defaults then overrides; it does not inherit custom
+cleanup-service drop-ins. Adjust paths for a custom installation. Direct
+`--show-policy` execution requires the three age variables to be supplied.
 
-To run the installed cleanup service, use
-`sudo systemctl start vps-docker-clean.service`; this performs pruning.
+To perform cleanup immediately:
 
-Primary references:
+```sh
+sudo systemctl start vps-docker-clean.service
+sudo journalctl -u vps-docker-clean.service -n 100 --no-pager
+```
 
-- Docker prune behavior: <https://docs.docker.com/engine/manage-resources/pruning/>
-- Docker logging driver configuration: <https://docs.docker.com/engine/logging/configure/>
-- Docker local logging driver options: <https://docs.docker.com/engine/logging/drivers/local/>
-- BuildKit GC: <https://docs.docker.com/build/cache/garbage-collection/>
-- Docker 28 GC fields: <https://github.com/moby/moby/blob/v28.0.0/daemon/config/builder.go>
-- journald limits: `man journald.conf`
-- logrotate `maxsize`: `man logrotate.conf`
-- systemd timer calendar syntax: `man systemd.time`
-- APT periodic options: `man apt.conf` and `/usr/lib/apt/apt.systemd.daily`
+A missing CLI, unreachable daemon or failed protection check produces a nonzero
+exit. A nonzero result from a prune or image-removal command is logged; cleanup
+tries the remaining candidates and categories, then reports failure. Inspection
+errors, timeouts and changed or expired protection stop the run. Earlier
+deletions are not rolled back. Each Docker command has a two-minute timeout; the service has a thirty-minute total timeout.
+After a timeout, inspect actual state before assuming every deletion completed.
 
-## Verification
+## Host policies
 
-There are two different checks:
+Docker daemon JSON is merged and backed up before modification. Unrelated daemon
+and `builder` settings remain; the entire `builder.gc` section and logging
+settings are replaced with this repository's policy. Cache GC uses the selected
+size budget and zero reserved cache. It operates independently of scheduled
+image cleanup and can reclaim recent unused cache; no age exemption applies.
+The budget is a GC target. See [BuildKit GC](https://docs.docker.com/build/cache/garbage-collection/).
 
-- Repository tests prove that the scripts, fixtures, docs contracts, and
-  install behavior still match this repo.
-- Installed policy checks inspect a real or staged filesystem and report
-  whether the expected files and policy values are present.
+Existing daemon-file mode and ownership are preserved. When available, `dockerd`
+validates the planned JSON before installation and the installed JSON during
+strict checks. This does not detect duplicate Docker service command-line
+logging flags; resolve those before restarting Docker. Managed files and their
+existing parent directories cannot be symlinks, and destinations cannot be
+non-regular files.
 
-For repository tests, run:
+APT cleanup uses the distro's existing timers and `apt.systemd.daily`. Installation
+skips its fixture when an active positive or `"always"` autoclean/clean interval
+already exists; update-only or disabled settings do not count. Otherwise it
+installs the defaults above. Use `--skip-apt-periodic` to keep APT policy external.
+
+For btmp, installation skips its fixture when an existing active-looking stanza
+contains `/var/log/btmp` and `maxsize 50M`. A stanza without that size threshold
+does not prevent fixture installation. Check for an existing btmp stanza before
+installing; retain one active stanza and use `--skip-btmp-logrotate` when managing
+it elsewhere. Strict checks accept the matching existing btmp or APT policy;
+component installs must use matching checker skip flags.
+
+### Install only btmp rotation
+
+Install `logrotate`, back up the previous policy outside `/etc/logrotate.d`, and
+use [the btmp fixture](fixtures/logrotate/btmp) as `/etc/logrotate.d/btmp`.
+Ensure only one active stanza refers to `/var/log/btmp`.
+
+For hourly checks, install [the timer drop-in](examples/logrotate.timer.d/hourly.conf)
+as `/etc/systemd/system/logrotate.timer.d/hourly.conf`, then:
+
+```sh
+sudo logrotate --debug /etc/logrotate.conf
+sudo systemctl daemon-reload
+sudo systemctl enable --now logrotate.timer
+sudo systemctl restart logrotate.timer
+sudo systemctl start logrotate.service
+```
+
+This manual example is not installed by `install.sh`. It changes the distro's
+logrotate schedule, so all its policies are checked hourly. Use an ordinary
+service run rather than forcing rotation of every package log.
+
+The fixture rotates monthly or when a check sees more than `50M`, keeps one
+compressed archive, and creates a replacement owned by `root:utmp` with mode
+`0660`. Growth between checks can exceed `50M`. Ensure space for compression of
+the existing log, then inspect service results, the next trigger and file sizes.
+
+## Uninstall
+
+```sh
+sudo ./scripts/uninstall.sh --dry-run
+sudo ./scripts/uninstall.sh
+```
+
+Removal attempts to disable and stop the timer, removes the executable,
+service/timer units, generated profile and selected optional policies, reloads
+systemd, and restarts journald unless skipped. Verify that the timer stopped;
+uninstall continues if the disable command fails. It preserves the operator override, deployment
+inventory/lock and Docker daemon JSON. It does not restore deleted resources.
+
+Use matching `--root`, `--prefix` and `--etc-dir` for custom installs. The optional
+policy skip flags leave those files installed; `--no-service-actions` skips
+systemctl. Staged or custom-configuration removal skips service actions
+automatically. Uninstall refuses unexpected non-regular destinations but can
+remove symlinks at repo-owned file paths.
+
+To restore an explicit daemon backup:
+
+```sh
+sudo ./scripts/uninstall.sh \
+  --restore-docker-backup /etc/docker/daemon.json.auto-cleanup.bak.YYYYMMDDTHHMMSSZ
+```
+
+The backup must be an absolute path to a regular file, not a symlink. Restore
+preserves metadata where permitted and refuses a symlink/non-regular destination.
+With `--root`, the backup is read from the current filesystem and the restore
+destination is staged. Restart Docker to activate restored settings; recreate
+containers only if they need to adopt restored logging defaults.
+
+## Repository tests
+
+Tests are container-only; use `make test`. The test container has no network or
+Docker socket, so retention checks exercise a Docker test double rather than
+pruning host resources.
 
 ```sh
 make test
+make test/all
 ```
 
-Repository tests are intentionally containerized. `make test` builds the pinned
-Debian test image from the copied repository context, then runs the broad
-in-container suite as a non-root user with no network, no Docker socket, a
-read-only root filesystem, dropped capabilities, and `/tmp` mounted noexec.
-The build context is deny-by-default and explicitly allowlists the source files
-needed by the test image; posture canaries check that common local secrets and
-generated files, including files under allowlisted source directories, stay out
-of the image.
-
-The test entrypoints refuse direct host execution. Run them through Make so the
-container wrapper can set the in-container guard:
-
-```sh
-make test              # default Debian broad lane
-make test/all          # posture, matrix, and root metadata lanes
-make test/matrix       # Debian and Ubuntu broad lanes
-make test/posture      # build-context and container-hardening canaries
-make test/root-container  # narrow root metadata lane
-```
-
-The broad lane checks shell/Python syntax, install manifest integrity, README
-policy contracts, container posture, install/check/uninstall behavior, default
-installed file sets, and Docker cleanup behavior through a fake Docker fixture.
-The root lane is separate because only metadata preservation needs uid 0; it
-runs with all capabilities dropped except `CHOWN` and `FOWNER`, and still has no
-network or Docker socket.
-
-For installed policy checks, run `check.sh`. Without `--strict`, it prints what
-it finds. With `--strict`, missing or invalid expected policy becomes a failing
-exit status:
-
-```sh
-./scripts/check.sh
-./scripts/check.sh --strict
-./scripts/check.sh --root /tmp/auto-cleanup-root --strict
-```
-
-For component installs, pass the same skip flags to `check.sh` that you passed
-to `install.sh`.
-
-Strict checks also flag repo-owned installed paths that are symlinks or
-non-regular files.
-
-## Host image retention
-
-Auto-cleanup is the single host executor for image age and filesystem free-space
-policy. Deployment tooling owns the complete protection inventory; it must
-include every deployed service and its locally retained rollback and recovery
-images, including images needed by deployment tasks. The installer
-never manufactures this inventory or refreshes its lease. No deployment inventory
-writer or deployment lock participant is implemented in this repository; both
-must be implemented in the deployment tooling before host activation. The
-executor can validate supplied entries but cannot discover an omitted rollback
-requirement. Inventory completeness remains the deployment owner's obligation. CI owns its builders'
-cache limits. The existing local Docker builder GC setting does not manage a
-remote CI builder or authorize scheduled Buildx pruning.
-
-Deployment writes this JSON as `IMAGE_PROTECTION_FILE` (root owned, mode `0600`):
-
-```json
-{
-  "version": 1,
-  "daemon_id": "COPY_THE_LOCAL_DOCKER_INFO_ID",
-  "expires_at": "2026-10-13T00:00:00Z",
-  "deployments": {
-    "app": {
-      "current": ["registry.example/app@sha256:REPLACE_WITH_64_HEX_DIGEST"],
-      "rollback": ["registry.example/app@sha256:REPLACE_WITH_64_HEX_DIGEST"]
-    }
-  },
-  "recovery": ["registry.example/recovery@sha256:REPLACE_WITH_64_HEX_DIGEST"]
-}
-```
-
-The example placeholders must be replaced with real locally inspectable digests
-and a future expiry. `docker --host unix:///var/run/docker.sock info --format
-'{{.ID}}'` supplies the daemon identity. Current lists cannot be empty; rollback
-and recovery lists may be empty only when deployment deliberately retains none.
-All listed images must exist locally and resolve to the supplied repository
-digest. Remote-only rollback images do not count as retained local recovery.
-Inventory and lock files must be owned by the cleanup account (root for the
-installed service) and must not allow group or other writes. JSON duplicates,
-unknown fields, wrong daemon identity, missing listed digests and expired leases
-all block cleanup. Container image IDs are protected automatically, including
-references to images absent from the local image store. An absent container
-source image does not block cleanup of other images. Images explicitly listed
-for retention must still resolve locally.
-
-Every deployment publisher and this executor must use the same stable adjacent
-lock file (`IMAGE_PROTECTION_FILE` plus `.lock`). Hold an exclusive `flock` from
-before pulling or changing images/containers through publishing the final
-inventory. Write the JSON to a temporary file in the same directory, then rename
-it atomically while holding the lock. Never unlink or replace the lock file.
-Before removing old container references, publish the union of current, incoming
-and rollback digests. Publish only after the required digests resolve locally;
-renew the expiry through deployment reconciliation. Cleanup fails promptly when
-the lock is busy. All invocations must use one inventory path for this daemon.
-Uncoordinated actors with Docker access can still race retention; this lock is a
-required deployment contract, not enforcement over every Docker client.
-
-Cleanup snapshots container image IDs before disposable-container pruning and
-rechecks container references before image removal. It checks inventory bytes
-and expiry immediately before every mutation. It removes only enumerated full
-image IDs, without force, and disables implicit parent deletion. Docker may refuse
-removal of multiply tagged images; these are retained and the run reports failure.
-See [Docker image removal](https://docs.docker.com/reference/cli/docker/image/rm/).
-Volumes are never pruned. Each Docker command is bounded to two minutes, and the
-existing service retains its thirty-minute total timeout.
-
-Set `IMAGE_MIN_FREE_GIB` in `/etc/default/vps-docker-clean` to a nonnegative whole
-number without leading zeros. Cleanup first considers the oldest unprotected
-images. Images older than `IMAGE_UNTIL` are eligible regardless of free space;
-space pressure may also remove younger unprotected images until the free-space
-floor is reached. Available bytes are measured on Docker's reported root
-filesystem after deletion; shared image sizes and Docker's reclaimable estimate
-are not treated as actual freed space. Protected images are never removed to
-meet this target. If it cannot be reached, cleanup reports failure; application
-data, volumes, cache and other filesystem users can occupy the same filesystem.
-Use monitoring and a host-specific floor; this is not a hard disk quota.
-
-## Replace an existing cleanup schedule
-
-1. Identify existing scheduled image-pruning commands. Disable their schedules
-   and wait for any running cleanup to finish before preparing the replacement.
-2. Configure deployment tooling to publish the complete protection inventory and
-   participate in its shared lock. Ensure every listed digest resolves locally.
-3. Install with `--no-enable-timer` and select the desired profile and optional
-   free-space floor. Stop an already active `vps-docker-clean.timer` separately;
-   the install option does not stop it. Review the installer's other managed
-   policies and select skip flags for settings you intend to leave unmanaged.
-4. Review `/etc/default/vps-docker-clean.policy` and any overrides in
-   `/etc/default/vps-docker-clean`, then run `sudo ./scripts/check.sh --strict`.
-   Confirm the previous cleanup schedule is disabled
-   before enabling `vps-docker-clean.timer`. Its persistent timer may run
-   immediately; inspect the service result and actual filesystem free space.
-
-Use one host image-retention schedule. Keep CI builder-cache retention in CI.
-If cleanup fails, inspect its error and correct the protection inventory or
-policy before enabling further runs.
+`make test` runs the Debian suite. `make test/all` adds Ubuntu, build-context
+canaries and root metadata checks. The broad suites run without root or
+capabilities, with a read-only filesystem and an explicit build-context
+allowlist. Test-image builds need engine access and network when dependencies
+are not cached. Use `make test/matrix`, `make test/posture` or
+`make test/root-container` for individual lanes; `make shell` opens the test image.
