@@ -12,6 +12,8 @@ Options:
   --etc-dir DIR           Configuration root (default: /etc)
   --profile NAME          vps (fresh default) or workstation; otherwise keep selection
   --cache-gib N           Override the profile cache budget in whole GiB
+  --image-protection MODE none (fresh default), tags or inventory; otherwise keep selection
+  --keep-image TAG        Keep a local repository:tag; repeat for more (selects tags mode)
   --dry-run               Print intended actions without installing files
   --skip-docker-config    Leave Docker logging and native cache GC unmanaged
   --skip-journald         Do not install the journald limits fixture
@@ -37,6 +39,8 @@ SKIP_APT_PERIODIC=0
 SKIP_JOURNALD=0
 REQUESTED_PROFILE=
 REQUESTED_CACHE_GIB=
+REQUESTED_IMAGE_PROTECTION=
+REQUESTED_KEEP_TAGS=
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -46,6 +50,18 @@ while [ "$#" -gt 0 ]; do
             ;;
         --cache-gib)
             REQUESTED_CACHE_GIB=${2:?--cache-gib requires a positive integer}
+            shift 2
+            ;;
+        --image-protection)
+            REQUESTED_IMAGE_PROTECTION=${2:?--image-protection requires none, tags or inventory}
+            shift 2
+            ;;
+        --keep-image)
+            keep_tag=${2:?--keep-image requires a local repository:tag}
+            case "$keep_tag" in
+                *[[:space:]]*) echo "Cannot keep image '$keep_tag': supply one repository:tag per --keep-image." >&2; exit 2 ;;
+            esac
+            REQUESTED_KEEP_TAGS="${REQUESTED_KEEP_TAGS:+$REQUESTED_KEEP_TAGS }$keep_tag"
             shift 2
             ;;
         --root)
@@ -322,8 +338,11 @@ DOCKER_DIR=$(target "$ETC_DIR/docker")
 DAEMON_JSON="$DOCKER_DIR/daemon.json"
 MANAGED_POLICY=$(target "$ETC_DIR/default/vps-docker-clean.policy")
 
+require_file "$REPO_DIR/fixtures/bin/vps-docker-clean"
 assert_install_destination "$MANAGED_POLICY"
 PROFILE=vps
+IMAGE_PROTECTION_MODE=none
+IMAGE_KEEP_TAGS=
 saved_cache=
 if [ -f "$MANAGED_POLICY" ]; then
     read_managed_policy "$MANAGED_POLICY"
@@ -336,7 +355,19 @@ fi
 profile_defaults
 CACHE_GIB=${REQUESTED_CACHE_GIB:-${saved_cache:-$CACHE_GIB}}
 validate_cache_budget
-echo "Managed cleanup policy (operator age overrides may differ):"
+if [ -n "$REQUESTED_KEEP_TAGS" ]; then
+    case "$REQUESTED_IMAGE_PROTECTION" in
+        ''|tags) IMAGE_PROTECTION_MODE=tags; IMAGE_KEEP_TAGS=$REQUESTED_KEEP_TAGS ;;
+        *) echo "Cannot select image protection '$REQUESTED_IMAGE_PROTECTION' with --keep-image; use tags or omit --image-protection." >&2; exit 2 ;;
+    esac
+elif [ -n "$REQUESTED_IMAGE_PROTECTION" ]; then
+    IMAGE_PROTECTION_MODE=$REQUESTED_IMAGE_PROTECTION
+    if [ "$IMAGE_PROTECTION_MODE" != tags ]; then
+        IMAGE_KEEP_TAGS=
+    fi
+fi
+validate_image_protection
+echo "Managed cleanup policy (operator overrides may differ):"
 print_managed_policy
 echo "Operator overrides are preserved at $ETC_DIR/default/vps-docker-clean."
 override_file=$(target "$ETC_DIR/default/vps-docker-clean")
@@ -355,9 +386,22 @@ if [ -e "$override_file" ] || [ -L "$override_file" ]; then
         1) ;;
         *) echo "Cannot inspect cleanup overrides at $override_file (grep exited $override_status)." >&2; exit 1 ;;
     esac
+    if [ -n "$REQUESTED_IMAGE_PROTECTION$REQUESTED_KEEP_TAGS" ]; then
+        for key in IMAGE_PROTECTION_MODE IMAGE_KEEP_TAGS; do
+            override_status=0
+            grep -Eq "^[[:space:]]*$key[[:space:]]*=" "$override_file" || override_status=$?
+            case "$override_status" in
+                0)
+                    echo "Cannot select installer image protection: $override_file assigns $key and takes precedence. Remove that assignment before using --image-protection or --keep-image; the file has been preserved." >&2
+                    exit 1
+                    ;;
+                1) ;;
+                *) echo "Cannot inspect cleanup overrides at $override_file (grep exited $override_status)." >&2; exit 1 ;;
+            esac
+        done
+    fi
 fi
 
-require_file "$REPO_DIR/fixtures/bin/vps-docker-clean"
 require_file "$REPO_DIR/fixtures/systemd/vps-docker-clean.service"
 require_file "$REPO_DIR/fixtures/systemd/vps-docker-clean.timer"
 if [ "$SKIP_DOCKER_CONFIG" -eq 0 ]; then
@@ -375,10 +419,6 @@ if [ "$SKIP_APT_PERIODIC" -eq 0 ]; then
     require_file "$REPO_DIR/fixtures/apt/10periodic-cleanup"
 fi
 
-if ! command -v python3 >/dev/null 2>&1; then
-    echo "python3 is required for the installed Docker retention executor." >&2
-    exit 1
-fi
 if [ "$SKIP_DOCKER_CONFIG" -eq 0 ]; then
     "$REPO_DIR/lib/merge-docker-daemon.py" \
         --daemon-json "$DAEMON_JSON" \

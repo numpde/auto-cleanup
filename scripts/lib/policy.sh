@@ -39,10 +39,32 @@ validate_cache_budget() {
     fi
 }
 
+# Values are stored literally in an unquoted systemd EnvironmentFile assignment.
+# The executor owns tag syntax and mode/list agreement; this checks safe encoding.
+validate_image_protection() {
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "python3 is required for the installed Docker retention executor." >&2
+        return 1
+    fi
+    case "$IMAGE_KEEP_TAGS" in
+        *[![:print:]]*|*\\*|*\"*|*\'*)
+            echo "Cannot configure image protection: IMAGE_KEEP_TAGS must not contain control characters, backslashes or quotes." >&2
+            return 1
+            ;;
+    esac
+    env -i PATH="$PATH" \
+        CONTAINER_UNTIL="$CONTAINER_UNTIL" NETWORK_UNTIL="$NETWORK_UNTIL" IMAGE_UNTIL="$IMAGE_UNTIL" \
+        IMAGE_PROTECTION_MODE="$IMAGE_PROTECTION_MODE" IMAGE_KEEP_TAGS="$IMAGE_KEEP_TAGS" \
+        python3 "$REPO_DIR/fixtures/bin/vps-docker-clean" --show-policy >/dev/null
+}
+
 # Read literal settings into policy globals without evaluating shell syntax.
 # Ignore those globals after failure; profile-default agreement is checked separately.
 read_managed_policy() {
     policy_path=$1
+    # Six-field policies cannot distinguish older cleanup from inventory protection.
+    IMAGE_PROTECTION_MODE=inventory
+    IMAGE_KEEP_TAGS=
     seen=' '
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in
@@ -60,6 +82,8 @@ read_managed_policy() {
             CONTAINER_UNTIL) CONTAINER_UNTIL=$value ;;
             NETWORK_UNTIL) NETWORK_UNTIL=$value ;;
             IMAGE_UNTIL) IMAGE_UNTIL=$value ;;
+            IMAGE_PROTECTION_MODE) IMAGE_PROTECTION_MODE=$value ;;
+            IMAGE_KEEP_TAGS) IMAGE_KEEP_TAGS=$value ;;
             *) echo "Cannot read $policy_path: unknown setting '$key'." >&2; return 1 ;;
         esac
     done < "$policy_path"
@@ -69,6 +93,16 @@ read_managed_policy() {
             *) echo "Cannot read $policy_path: missing setting '$key'." >&2; return 1 ;;
         esac
     done
+    case "$seen" in
+        *" IMAGE_PROTECTION_MODE "*|*" IMAGE_KEEP_TAGS "*)
+            for key in IMAGE_PROTECTION_MODE IMAGE_KEEP_TAGS; do
+                case "$seen" in
+                    *" $key "*) ;;
+                    *) echo "Cannot read $policy_path: missing setting '$key'." >&2; return 1 ;;
+                esac
+            done
+            ;;
+    esac
     case "$PROFILE:$SCHEDULE" in
         vps:daily|workstation:weekly) ;;
         *) echo "Cannot read $policy_path: profile and schedule do not match." >&2; return 1 ;;
@@ -83,11 +117,13 @@ read_managed_policy() {
             ''|*[!0-9]*|0*) echo "Cannot read $policy_path: age '$value' must be positive whole hours." >&2; return 1 ;;
         esac
     done
+    validate_image_protection
 }
 
 print_managed_policy() {
     printf '%s\n' "PROFILE=$PROFILE" "CACHE_GIB=$CACHE_GIB" "SCHEDULE=$SCHEDULE" \
-        "CONTAINER_UNTIL=$CONTAINER_UNTIL" "NETWORK_UNTIL=$NETWORK_UNTIL" "IMAGE_UNTIL=$IMAGE_UNTIL"
+        "CONTAINER_UNTIL=$CONTAINER_UNTIL" "NETWORK_UNTIL=$NETWORK_UNTIL" "IMAGE_UNTIL=$IMAGE_UNTIL" \
+        "IMAGE_PROTECTION_MODE=$IMAGE_PROTECTION_MODE" "IMAGE_KEEP_TAGS=$IMAGE_KEEP_TAGS"
 }
 
 # Older engines can silently ignore maxUsedSpace, so JSON validation is insufficient.

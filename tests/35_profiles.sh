@@ -11,7 +11,86 @@ stage=$scratch/stage
 "$REPO_DIR/scripts/install.sh" --root "$stage" >/dev/null
 "$REPO_DIR/scripts/check.sh" --root "$stage" --strict >/dev/null
 grep -Fxq PROFILE=vps "$stage/etc/default/vps-docker-clean.policy"
+grep -Fxq IMAGE_PROTECTION_MODE=none "$stage/etc/default/vps-docker-clean.policy"
+grep -Fxq IMAGE_KEEP_TAGS= "$stage/etc/default/vps-docker-clean.policy"
 grep -Fxq OnCalendar=daily "$stage/etc/systemd/system/vps-docker-clean.timer"
+
+# Installer choices survive reinstall and profile changes independently of budgets.
+image_stage=$scratch/images
+image_policy=$image_stage/etc/default/vps-docker-clean.policy
+"$REPO_DIR/scripts/install.sh" --root "$image_stage" \
+    --keep-image app:latest --keep-image app:rollback >/dev/null
+grep -Fxq IMAGE_PROTECTION_MODE=tags "$image_policy"
+grep -Fxq 'IMAGE_KEEP_TAGS=app:latest app:rollback' "$image_policy"
+"$REPO_DIR/scripts/install.sh" --root "$image_stage" --profile workstation --cache-gib 8 >/dev/null
+"$REPO_DIR/scripts/install.sh" --root "$image_stage" >/dev/null
+"$REPO_DIR/scripts/check.sh" --root "$image_stage" --strict >/dev/null
+grep -Fxq 'IMAGE_KEEP_TAGS=app:latest app:rollback' "$image_policy"
+(
+    . "$REPO_DIR/scripts/lib/policy.sh"
+    read_managed_policy "$image_policy"
+    export CONTAINER_UNTIL NETWORK_UNTIL IMAGE_UNTIL IMAGE_PROTECTION_MODE IMAGE_KEEP_TAGS
+    "$image_stage/usr/local/sbin/vps-docker-clean" --show-policy
+) > "$scratch/image-show"
+grep -Fxq IMAGE_PROTECTION_MODE=tags "$scratch/image-show"
+grep -Fxq 'IMAGE_KEEP_TAGS=app:latest app:rollback' "$scratch/image-show"
+"$REPO_DIR/scripts/install.sh" --root "$image_stage" --keep-image app:stable >/dev/null
+"$REPO_DIR/scripts/install.sh" --root "$image_stage" --image-protection tags >/dev/null
+grep -Fxq IMAGE_KEEP_TAGS=app:stable "$image_policy"
+for mode in none inventory; do
+    "$REPO_DIR/scripts/install.sh" --root "$image_stage" --image-protection "$mode" >/dev/null
+    grep -Fxq "IMAGE_PROTECTION_MODE=$mode" "$image_policy"
+    grep -Fxq IMAGE_KEEP_TAGS= "$image_policy"
+done
+
+# Old six-field policies retain inventory protection unless explicitly changed.
+for selection in preserve none; do
+    legacy=$scratch/legacy-$selection
+    mkdir -p "$legacy/etc/default"
+    sed '/^IMAGE_PROTECTION_MODE=/d; /^IMAGE_KEEP_TAGS=/d' \
+        "$stage/etc/default/vps-docker-clean.policy" > "$legacy/etc/default/vps-docker-clean.policy"
+    case "$selection" in
+        preserve) "$REPO_DIR/scripts/install.sh" --root "$legacy" >/dev/null; expected=inventory ;;
+        none) "$REPO_DIR/scripts/install.sh" --root "$legacy" --image-protection none >/dev/null; expected=none ;;
+    esac
+    grep -Fxq "IMAGE_PROTECTION_MODE=$expected" "$legacy/etc/default/vps-docker-clean.policy"
+    "$REPO_DIR/scripts/check.sh" --root "$legacy" --strict >/dev/null
+done
+for missing in IMAGE_PROTECTION_MODE IMAGE_KEEP_TAGS; do
+    partial=$scratch/partial-$missing
+    mkdir -p "$partial/etc/default"
+    sed "/^$missing=/d" "$image_policy" > "$partial/etc/default/vps-docker-clean.policy"
+    if "$REPO_DIR/scripts/install.sh" --root "$partial" >"$scratch/out" 2>&1; then
+        echo "partial image protection accepted without $missing" >&2; exit 1
+    fi
+    grep -q "missing setting '$missing'" "$scratch/out"
+    test ! -e "$partial/usr"
+done
+
+# Explicit installer choices cannot be silently overridden by the second file.
+for key in IMAGE_PROTECTION_MODE IMAGE_KEEP_TAGS; do
+    image_override=$image_stage/etc/default/vps-docker-clean
+    case "$key" in
+        IMAGE_PROTECTION_MODE) printf '%s\n' IMAGE_PROTECTION_MODE=inventory > "$image_override" ;;
+        IMAGE_KEEP_TAGS) printf '%s\n' IMAGE_KEEP_TAGS=app:latest > "$image_override" ;;
+    esac
+    cp "$image_override" "$scratch/image-override.saved"
+    "$REPO_DIR/scripts/install.sh" --root "$image_stage" >/dev/null
+    cmp "$scratch/image-override.saved" "$image_override"
+    cp "$image_policy" "$scratch/image-policy.saved"
+    cp "$image_stage/etc/systemd/system/vps-docker-clean.timer" "$scratch/image-timer.saved"
+    if "$REPO_DIR/scripts/install.sh" --root "$image_stage" --profile vps \
+        --image-protection none >"$scratch/out" 2>&1; then
+        echo "installer protection override conflict accepted: $key" >&2; exit 1
+    fi
+    grep -Fq "$image_override assigns $key" "$scratch/out"
+    cmp "$scratch/image-override.saved" "$image_override"
+    cmp "$scratch/image-policy.saved" "$image_policy"
+    cmp "$scratch/image-timer.saved" "$image_stage/etc/systemd/system/vps-docker-clean.timer"
+done
+printf '%s\n' '# IMAGE_PROTECTION_MODE=inventory' 'OTHER_IMAGE_KEEP_TAGS=app:latest' > "$image_override"
+"$REPO_DIR/scripts/install.sh" --root "$image_stage" --keep-image app:stable >/dev/null
+grep -Fxq IMAGE_PROTECTION_MODE=tags "$image_policy"
 
 # Both files can be present while reversed precedence silently discards overrides.
 service=$stage/etc/systemd/system/vps-docker-clean.service
@@ -35,12 +114,22 @@ grep -q '28 or newer' "$scratch/out"
 test ! -e "$scratch/old/usr"
 
 for args in '--profile unknown' '--cache-gib 0' '--cache-gib -1' '--cache-gib 1.5' \
-    '--cache-gib 8589934592' '--cache-gib 99999999999999999999'; do
+    '--cache-gib 8589934592' '--cache-gib 99999999999999999999' \
+    '--image-protection unknown' '--image-protection tags' '--image-protection' \
+    '--keep-image' '--keep-image app' '--image-protection none --keep-image app:latest' \
+    '--keep-image app:latest --image-protection inventory'; do
     # These fixed test arguments deliberately exercise the CLI's separate words.
     if "$REPO_DIR/scripts/install.sh" --root "$scratch/invalid" $args >"$scratch/out" 2>&1; then
         echo "invalid setting accepted: $args" >&2; exit 1
     fi
     test ! -e "$scratch/invalid"
+done
+for tag in 'app:lat est' 'app:lat\est' 'app:lat"est' "app:lat'est" \
+    "$(printf 'app:latest\nPROFILE=vps')"; do
+    if "$REPO_DIR/scripts/install.sh" --root "$scratch/unsafe-tag" --keep-image "$tag" >"$scratch/out" 2>&1; then
+        echo "unsafe EnvironmentFile tag accepted: $tag" >&2; exit 1
+    fi
+    test ! -e "$scratch/unsafe-tag"
 done
 
 # The direct merger has the same representability boundary as the installer.
@@ -139,12 +228,12 @@ assert data['builder']['gc']['policy'] == [
 PY
 
 export IMAGE_PROTECTION_FILE="$scratch/protection.json"
-cp "$REPO_DIR/tests/fixtures/image-protection.json" "$IMAGE_PROTECTION_FILE"
+test ! -e "$IMAGE_PROTECTION_FILE"
 
 # The installed command receives managed ages followed by explicit overrides.
 . "$REPO_DIR/scripts/lib/policy.sh"
 read_managed_policy "$stage/etc/default/vps-docker-clean.policy"
-export CONTAINER_UNTIL NETWORK_UNTIL IMAGE_UNTIL
+export CONTAINER_UNTIL NETWORK_UNTIL IMAGE_UNTIL IMAGE_PROTECTION_MODE IMAGE_KEEP_TAGS
 IMAGE_UNTIL=72h DOCKER_HOST=tcp://unwanted.example:2375 DOCKER_CONTEXT=unwanted \
     FAKE_DOCKER_LOG="$scratch/prune.log" DOCKER="$REPO_DIR/tests/fixtures/fake-docker.sh" \
     "$stage/usr/local/sbin/vps-docker-clean" >/dev/null
@@ -155,6 +244,7 @@ if grep -Eq 'volume|builder|buildx' "$scratch/prune.log"; then
 fi
 "$stage/usr/local/sbin/vps-docker-clean" --show-policy > "$scratch/show"
 grep -Fxq IMAGE_UNTIL=336h "$scratch/show"
+grep -Fxq IMAGE_PROTECTION_MODE=none "$scratch/show"
 
 for argument in '' --unknown; do
     if DOCKER="$REPO_DIR/tests/fixtures/fake-docker.sh" \

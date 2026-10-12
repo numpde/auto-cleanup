@@ -118,7 +118,7 @@ fi
 grep -q "python3 is required" "$MERGE_ROOT/no-python.err"
 
 mkdir -p "$FAKE_ROOT/dockerd-bin"
-for cmd in awk dirname grep python3 cat sed cmp mktemp rm apt-config logrotate; do
+for cmd in awk dirname grep python3 env cat sed cmp mktemp rm apt-config logrotate; do
     if command -v "$cmd" >/dev/null 2>&1; then
         ln -s "$(command -v "$cmd")" "$FAKE_ROOT/dockerd-bin/$cmd"
     fi

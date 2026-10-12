@@ -7,8 +7,9 @@ log rotation; and APT cache cleanup.
 The cleanup service always protects images referenced by containers. Choose
 whether to retain additional images through selected local tags or a deployment
 inventory, or to apply cleanup to all images without container references.
-**Before enabling cleanup, choose [an image protection mode](#2-choose-image-protection-and-review-existing-schedules).**
-The default remains `inventory`; it requires a valid deployment inventory.
+A fresh installation needs no image inventory or configuration edit: it retains
+container references and cleans up eligible unused images. Use installer options
+to [keep selected tags or use a deployment inventory](#2-choose-image-protection-and-review-existing-schedules).
 
 ## Requirements and defaults
 
@@ -35,7 +36,8 @@ configuration. CI manages its builders' cache retention.
 
 A fresh installation selects `vps`. Reinstalling without `--profile` preserves
 the saved profile and cache budget. Explicit `--profile` selects that profile's
-defaults; `--cache-gib N` overrides its cache budget.
+defaults; `--cache-gib N` overrides its cache budget. Image protection choices are
+saved separately and survive profile changes.
 
 | Area | Default |
 | --- | --- |
@@ -76,40 +78,45 @@ actions. Dry-run and staging can run without sudo.
 
 ### 2. Choose image protection and review existing schedules
 
-Choose one mode for `/etc/default/vps-docker-clean`, the operator's systemd
-EnvironmentFile. The installer preserves this file on reinstall. All modes protect
-container references and apply the same age and free-space rules to other images.
+Choose image protection through installer options. All modes retain container
+references and apply the same age and free-space rules to other images.
 
-| Mode | Additional image protection | Preparation |
+| Mode | Additional image protection | Installer option |
 | --- | --- | --- |
-| `none` | None | Set `IMAGE_PROTECTION_MODE=none` |
-| `tags` | Images currently bearing selected local tags | Set the mode and a nonempty `IMAGE_KEEP_TAGS` list |
-| `inventory` (default) | Deployment, rollback and recovery digests | Configure tooling to publish and renew [the inventory](#deployment-inventory-mode) |
+| `none` (fresh installation default) | None | `--image-protection none` |
+| `tags` | Images currently bearing selected local tags | `--keep-image repository:tag`, repeated for each tag |
+| `inventory` | Deployment, rollback and recovery digests | `--image-protection inventory` and [a publisher](#deployment-inventory-mode) |
 
-For container references alone, use:
+For a fresh VPS installation, no protection option is needed:
 
-```ini
-IMAGE_PROTECTION_MODE=none
+```sh
+sudo ./scripts/install.sh --profile vps --no-enable-timer
 ```
 
-To also keep selected tagged images, use their exact local repository:tag names:
+To choose container references alone on an existing installation:
 
-```ini
-IMAGE_PROTECTION_MODE=tags
-IMAGE_KEEP_TAGS='my-app:latest other:stable'
+```sh
+sudo ./scripts/install.sh --image-protection none --no-enable-timer
 ```
 
-Cleanup resolves tags to local image IDs automatically. `latest` is a literal tag
-name; it does not select the newest image or fetch anything from a registry.
-Every selected tag must exist locally before any pruning can start.
+To also keep selected tagged images:
 
-Leaving the mode unset selects `inventory`. An absent or invalid inventory blocks
-the entire cleanup service, including container and network pruning. Setting
-`none` or `tags` intentionally replaces inventory protection, even if an inventory
-already exists. These modes need no inventory publisher. Remove any nonempty
-`IMAGE_KEEP_TAGS` when selecting `none` or `inventory`; it is rejected outside
-`tags` mode. See [image protection](#image-protection) for tag changes and the
-shared lock.
+```sh
+sudo ./scripts/install.sh --keep-image my-app:latest --keep-image other:stable --no-enable-timer
+```
+
+`--keep-image` selects `tags` mode and replaces the saved tag list with all tags
+supplied on that invocation. Cleanup resolves their local image IDs automatically.
+`latest` is a literal tag name; it does not select the newest image or fetch
+anything from a registry. Every selected tag must exist locally before pruning.
+
+The installer saves the mode and tag list in its generated policy. Reinstalling
+without protection options preserves them; selecting `none` or `inventory`
+clears the saved tag list. Choosing `none` or `tags` intentionally replaces
+inventory protection even if an inventory exists. Neither needs a publisher.
+For an existing policy without a saved mode, the installer conservatively selects
+`inventory`; use `--image-protection none` for ordinary unused-image cleanup.
+See [image protection](#image-protection) for tag changes and the shared lock.
 
 When replacing an existing cleanup schedule, disable its image-pruning jobs and
 wait for any active run to finish before preparing the replacement. Use one host
@@ -133,14 +140,17 @@ The default destinations are:
 | --- | --- |
 | `/usr/local/sbin/vps-docker-clean` | Cleanup executable |
 | `/etc/systemd/system/vps-docker-clean.{service,timer}` | Service and schedule |
-| `/etc/default/vps-docker-clean.policy` | Generated profile settings |
+| `/etc/default/vps-docker-clean.policy` | Generated profile and image protection settings |
 | `/etc/docker/daemon.json` | Docker logging and local cache GC |
 | `/etc/systemd/journald.conf.d/auto-cleanup-limits.conf` | Journal limits |
 | `/etc/logrotate.d/auto-cleanup-btmp` | Conditional btmp policy |
 | `/etc/apt/apt.conf.d/90auto-cleanup-periodic` | Conditional APT policy |
 
 The installer preserves an existing operator override file and does not create
-the protection inventory. Review existing btmp and APT policy before installing;
+the protection inventory. If that override file assigns `IMAGE_PROTECTION_MODE`
+or `IMAGE_KEEP_TAGS`, an explicit installer protection choice fails before writing;
+remove those assignments before using `--image-protection` or `--keep-image`.
+Review existing btmp and APT policy before installing;
 use their skip flags when those policies are managed elsewhere. Detection rules
 are described under [host policies](#host-policies).
 
@@ -186,6 +196,8 @@ Run `./scripts/install.sh --help` for the complete CLI.
 | --- | --- |
 | `--profile vps\|workstation` | Select profile defaults |
 | `--cache-gib N` | Positive whole-GiB cache budget, up to 8589934591 |
+| `--image-protection none\|tags\|inventory` | Select image protection; `tags` requires a nonempty saved or supplied tag list |
+| `--keep-image TAG` | Keep an exact local repository:tag; repeat for each tag; implies `tags` and replaces the saved tag list |
 | `--skip-docker-config` | Leave Docker logging and native cache GC unmanaged |
 | `--skip-journald` | Leave journald policy unmanaged |
 | `--skip-btmp-logrotate` | Leave btmp policy unmanaged |
@@ -234,8 +246,15 @@ changes to coordinate with cleanup. Clients that ignore the lock can race cleanu
 
 ### Deployment inventory mode
 
-`inventory` is the default and preserves the existing requirement for an explicit,
-valid inventory. Docker cannot decide which unused image you intend to retain for
+Select `inventory` when deployment tooling publishes a complete, expiring set of
+images to retain:
+
+```sh
+sudo ./scripts/install.sh --image-protection inventory --no-enable-timer
+```
+
+Prepare the publisher before enabling the timer. Docker cannot decide which
+unused image you intend to retain for
 a future deployment, rollback or recovery. Deployment tooling must publish those
 choices and renew the inventory's expiry, even when no new deployment occurs.
 Cleanup cannot discover an omitted rollback requirement. This repository supplies
@@ -333,12 +352,14 @@ See [the override template](fixtures/default/vps-docker-clean.example).
 | `DOCKER` | `docker`; an executable name or path |
 | `CONTAINER_UNTIL`, `NETWORK_UNTIL`, `IMAGE_UNTIL` | Profile defaults; positive whole hours such as `48h`, without leading zeros |
 | `IMAGE_MIN_FREE_GIB` | `0` disables pressure; nonnegative whole GiB without leading zeros |
-| `IMAGE_PROTECTION_MODE` | `inventory`; `none`, `tags` or `inventory` |
+| `IMAGE_PROTECTION_MODE` | Saved installer choice: `none`, `tags` or `inventory`; fresh installations use `none`; existing policies without a mode select `inventory` conservatively |
 | `IMAGE_KEEP_TAGS` | Empty; whitespace-separated explicit local repository:tag names; must be nonempty in `tags` mode and empty in other modes |
 | `IMAGE_PROTECTION_FILE` | `/etc/default/vps-docker-clean.images.json`; absolute path for inventory mode and the lock base in every mode; parent directory must exist |
 
-Systemd reads the generated `.policy` first and overrides second. Change profile
-and cache budget through installer options, not by editing the generated file.
+Systemd reads the generated `.policy` first and overrides second. Change profile,
+cache budget, image protection mode and kept tags through installer options,
+not by editing the generated file. Without a mode supplied by either file, the
+cleanup executable defaults to `inventory` to preserve existing protection.
 Obsolete `BUILD_CACHE_UNTIL`, `BUILD_CACHE_RESERVED` and `ALLOW_BUILDX_PRUNE`
 overrides are rejected; remove them before upgrading.
 
@@ -352,7 +373,8 @@ sudo ./scripts/check.sh --strict
 
 Use the same component skip flags and custom paths as installation. Repo-owned
 configuration files must match their source fixtures or rendered templates;
-place supported custom settings in the operator override file or service drop-ins. Without
+use installer options for saved policy choices and the operator override file or
+service drop-ins for other supported settings. Without
 `--strict`, the checker reports discrepancies without making them a failing exit
 status. On a real host it also reports timer state and free space on `/`; that
 space report does not validate the Docker filesystem free-space floor. It checks

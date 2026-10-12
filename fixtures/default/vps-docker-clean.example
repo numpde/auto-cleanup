@@ -5,8 +5,9 @@
 # Do not use shell expansions or append command arguments here.
 # *_UNTIL values must be positive whole hours, for example 24h or 168h.
 # They measure creation age, not how long a container has been stopped.
-# The managed .policy file supplies defaults; this file overrides runtime ages.
+# The managed .policy file supplies defaults; this file overrides runtime settings.
 # Change profile/cache budget through install.sh --profile / --cache-gib.
+# Choose image protection through --image-protection / repeated --keep-image.
 # Native cache GC requires Docker Engine 28+. Old cache overrides are rejected.
 
 # DOCKER=docker
@@ -17,10 +18,12 @@
 # 0 disables pressure; set a host-specific free-space floor.
 # IMAGE_MIN_FREE_GIB=5
 # Choose additional image protection; container source IDs are always retained.
-# inventory (default): deployment publishes the strict digest inventory.
-# none: no additional images are protected; no inventory is needed.
+# none (fresh default): no additional images are protected; no inventory is needed.
+# inventory: deployment publishes the strict digest inventory.
 # tags: keep the local image IDs for the exact tags in IMAGE_KEEP_TAGS.
 # IMAGE_PROTECTION_MODE=inventory
+# Assignments here override the generated policy. Explicit installer protection
+# options fail while these assignments exist; remove them first.
 # For tags mode, supply whitespace-separated repository:tag names that appear
 # exactly in local Docker image RepoTags; latest is an ordinary literal tag.
 # IMAGE_PROTECTION_MODE=tags

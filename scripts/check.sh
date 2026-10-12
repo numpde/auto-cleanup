@@ -177,7 +177,7 @@ if is_plain_file "$managed_policy" && read_managed_policy "$managed_policy"; the
     CACHE_GIB=$saved_cache
     if [ "$(print_managed_policy)" = "$(cat "$managed_policy")" ]; then
         POLICY_VALID=1
-        echo "Managed defaults (not live daemon state or operator age overrides):"
+        echo "Managed defaults (not live daemon state or effective operator overrides):"
         print_managed_policy
     else
         echo "bad     Managed policy differs from profile defaults; reinstall to regenerate it."
@@ -188,7 +188,7 @@ else
 fi
 override_file=$(target "$ETC_DIR/default/vps-docker-clean")
 if [ -e "$override_file" ]; then
-    echo "info    Operator overrides at $override_file may change runtime ages; systemd reads this file."
+    echo "info    Operator overrides at $override_file may change runtime ages or image protection; systemd reads this file."
 fi
 CHECK_RENDERED=
 trap 'rm -f "$CHECK_RENDERED"' EXIT INT TERM
