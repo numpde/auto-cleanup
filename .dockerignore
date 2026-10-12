@@ -73,3 +73,7 @@ tests/lib/**
 !tests/lib/require-container.sh
 !tests/root-metadata.sh
 !tests/run-all.sh
+!tests/37_image_retention.sh
+!tests/image_retention.py
+!tests/fixtures/fake-retention-docker.py
+!tests/fixtures/image-protection.json

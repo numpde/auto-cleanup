@@ -375,11 +375,11 @@ if [ "$SKIP_APT_PERIODIC" -eq 0 ]; then
     require_file "$REPO_DIR/fixtures/apt/10periodic-cleanup"
 fi
 
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 is required for the installed Docker retention executor." >&2
+    exit 1
+fi
 if [ "$SKIP_DOCKER_CONFIG" -eq 0 ]; then
-    if ! command -v python3 >/dev/null 2>&1; then
-        echo "python3 is required for Docker daemon JSON; use --skip-docker-config to skip." >&2
-        exit 1
-    fi
     "$REPO_DIR/lib/merge-docker-daemon.py" \
         --daemon-json "$DAEMON_JSON" \
         --policy-json "$REPO_DIR/fixtures/docker/daemon-log-policy.json" \

@@ -1,7 +1,7 @@
 # auto-cleanup
 
 Docker disk cleanup profiles for a small VPS or a development workstation.
-Requires Docker Engine 28 or newer for managed native build-cache GC.
+Requires Python 3 for retention and Docker Engine 28 or newer for managed native build-cache GC.
 
 Use this repo when you want predictable limits for common disk-growth sources
 without installing broad cleanup jobs that might remove data you still care
@@ -28,7 +28,7 @@ that profile's defaults, with `--cache-gib N` taking precedence for the budget.
 | --- | --- | --- |
 | Native build-cache budget | 1 GiB | 40 GiB |
 | Scheduled pruning | Daily | Weekly |
-| Unreferenced images, including tagged images | Created over 24 hours ago | Created over 14 days ago |
+| Unprotected images without container references | Created over 24 hours ago | Created over 14 days ago |
 | Disposable stopped containers | Created over 24 hours ago | Created over 7 days ago |
 | Unreferenced networks | Created over 24 hours ago | Created over 7 days ago |
 
@@ -37,11 +37,13 @@ Apply it only to containers whose writable files and logs may be deleted, for
 example disposable test tasks. Ordinary service containers are preserved,
 including when stopped or failed. Volumes are never pruned.
 
-Image age is **creation age**, not time since last use or download. An image
-used daily with `docker run --rm` can be pruned between runs. Tags and Compose
-files do not protect an image; an existing container reference does. Removing
-a disposable container can make its image eligible in the same cleanup run.
-Pruned images may need to be downloaded or rebuilt, including rollback images.
+Image age is **creation age**, not time since last use or download. Deployment
+publishes the current, rollback and recovery repository digests to protect;
+container references are protected too, including stopped containers and
+containers removed by this run. Tags and Compose files alone do not protect an
+image. Missing or invalid deployment protection blocks cleanup with a nonzero
+exit, including on a fresh install. Prepare the inventory before enabling the
+timer. See [host image retention](#host-image-retention).
 
 Shared policy:
 
@@ -327,8 +329,9 @@ No cleanup policy guarantees a disk will never fill. Database contents, uploads,
 other application data and non-Docker files need their own limits and disk
 monitoring. This repository does not install a disk alerting service.
 
-Individual prune command failures are reported, but the cleanup script still
-attempts the remaining safe prune categories before exiting nonzero. That keeps
+Individual Docker command failures are reported, but the cleanup script still
+attempts the remaining safe categories before exiting nonzero. Invalid or expired
+protection stops further deletion immediately. That keeps
 one failed cleanup area from preventing the rest of the scheduled cleanup.
 
 If the Docker CLI is missing or the local daemon is unreachable, the cleanup
@@ -349,6 +352,8 @@ shell script, and shell expansions or extra command arguments are not evaluated.
 - `CONTAINER_UNTIL`, profile default
 - `NETWORK_UNTIL`, profile default
 - `IMAGE_UNTIL`, profile default
+- `IMAGE_MIN_FREE_GIB`, default `0` (no space-pressure eviction)
+- `IMAGE_PROTECTION_FILE`, default `/etc/default/vps-docker-clean.images.json`
 
 Age overrides must be positive whole hours, such as `48h`. Systemd reads the
 generated `.policy` file first and the operator override file second. Do not
@@ -457,3 +462,80 @@ to `install.sh`.
 
 Strict checks also flag repo-owned installed paths that are symlinks or
 non-regular files.
+
+## Host image retention
+
+Auto-cleanup is the single host executor for image age and filesystem free-space
+policy. Deployment tooling owns the complete protection inventory; it must
+include every deployed service and its locally retained rollback and recovery
+images, including digest-pinned Playwright used by deployment tasks. The installer
+never manufactures this inventory or refreshes its lease. No deployment inventory
+writer or deployment lock participant is implemented in this repository; both
+must be implemented in the deployment tooling before host activation. The
+executor can validate supplied entries but cannot discover an omitted rollback
+requirement. Inventory completeness remains the deployment owner's obligation. CI owns its builders'
+cache limits. The existing local Docker builder GC setting does not manage a
+remote CI builder or authorize scheduled Buildx pruning.
+
+Deployment writes this JSON as `IMAGE_PROTECTION_FILE` (root owned, mode `0600`):
+
+```json
+{
+  "version": 1,
+  "daemon_id": "COPY_THE_LOCAL_DOCKER_INFO_ID",
+  "expires_at": "2026-10-13T00:00:00Z",
+  "deployments": {
+    "gui": {
+      "current": ["registry.example/gui@sha256:REPLACE_WITH_64_HEX_DIGEST"],
+      "rollback": ["registry.example/gui@sha256:REPLACE_WITH_64_HEX_DIGEST"]
+    }
+  },
+  "recovery": ["registry.example/playwright@sha256:REPLACE_WITH_64_HEX_DIGEST"]
+}
+```
+
+The example placeholders must be replaced with real locally inspectable digests
+and a future expiry. `docker --host unix:///var/run/docker.sock info --format
+'{{.ID}}'` supplies the daemon identity. Current lists cannot be empty; rollback
+and recovery lists may be empty only when deployment deliberately retains none.
+All listed images must exist locally and resolve to the supplied repository
+digest. Remote-only rollback images do not count as retained local recovery.
+Inventory and lock files must be owned by the cleanup account (root for the
+installed service) and must not allow group or other writes. JSON duplicates,
+unknown fields, wrong daemon identity, missing digests, missing
+container source images and expired leases all block cleanup. A running container
+whose original image was deleted needs a verified recoverable replacement and a
+controlled recreation before retention can proceed. Adding a recovery digest
+does not silently waive the missing-source check.
+
+Every deployment publisher and this executor must use the same stable adjacent
+lock file (`IMAGE_PROTECTION_FILE` plus `.lock`). Hold an exclusive `flock` from
+before pulling or changing images/containers through publishing the final
+inventory. Write the JSON to a temporary file in the same directory, then rename
+it atomically while holding the lock. Never unlink or replace the lock file.
+Before removing old container references, publish the union of current, incoming
+and rollback digests. Publish only after the required digests resolve locally;
+renew the expiry through deployment reconciliation. Cleanup fails promptly when
+the lock is busy. All invocations must use one inventory path for this daemon.
+Uncoordinated actors with Docker access can still race retention; this lock is a
+required deployment contract, not enforcement over every Docker client.
+
+Cleanup snapshots container image IDs before disposable-container pruning and
+rechecks container references before image removal. It checks inventory bytes
+and expiry immediately before every mutation. It removes only enumerated full
+image IDs, without force, and disables implicit parent deletion. Docker may refuse
+removal of multiply tagged images; these are retained and the run reports failure.
+See [Docker image removal](https://docs.docker.com/reference/cli/docker/image/rm/).
+Volumes are never pruned. Each Docker command is bounded to two minutes, and the
+existing service retains its thirty-minute total timeout.
+
+Set `IMAGE_MIN_FREE_GIB` in `/etc/default/vps-docker-clean` to a nonnegative whole
+number without leading zeros. Cleanup first considers the oldest unprotected
+images. Images older than `IMAGE_UNTIL` are eligible regardless of free space;
+space pressure may also remove younger unprotected images until the free-space
+floor is reached. Available bytes are measured on Docker's reported root
+filesystem after deletion; shared image sizes and Docker's reclaimable estimate
+are not treated as actual freed space. Protected images are never removed to
+meet this target. If it cannot be reached, cleanup reports failure; application
+data, volumes, cache and other filesystem users can occupy the same filesystem.
+Use monitoring and a host-specific floor; this is not a hard disk quota.

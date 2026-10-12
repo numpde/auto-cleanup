@@ -1,68 +1,233 @@
-#!/bin/sh
-# Systemd supplies profile defaults and then operator age overrides. Docker owns
-# reference checks; only explicitly disposable stopped containers may be removed.
-set -eu
+#!/usr/bin/env python3
+"""Apply host retention while deployment owns the protected image inventory."""
+import datetime as dt
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import sys
 
-DOCKER=${DOCKER:-docker}
-if [ "${BUILD_CACHE_UNTIL+x}${BUILD_CACHE_RESERVED+x}${ALLOW_BUILDX_PRUNE+x}" != "" ]; then
-    echo "Cannot run cleanup with obsolete cache overrides; remove BUILD_CACHE_UNTIL, BUILD_CACHE_RESERVED and ALLOW_BUILDX_PRUNE. Cache is now managed by Docker GC; set its budget with install.sh --cache-gib." >&2
-    exit 2
-fi
-for age in "${CONTAINER_UNTIL-}" "${NETWORK_UNTIL-}" "${IMAGE_UNTIL-}"; do
-    case "$age" in
-        *h) hours=${age%h} ;;
-        *) hours= ;;
-    esac
-    case "$hours" in
-        ''|*[!0-9]*|0*)
-            echo "Cannot run cleanup: CONTAINER_UNTIL, NETWORK_UNTIL and IMAGE_UNTIL must each be positive whole hours (for example 24h); received '$age'." >&2
-            exit 2
-            ;;
-    esac
-done
-case "$#:${1-}" in
-    1:--show-policy)
-        printf '%s\n' "CONTAINER_UNTIL=$CONTAINER_UNTIL" "NETWORK_UNTIL=$NETWORK_UNTIL" "IMAGE_UNTIL=$IMAGE_UNTIL" \
-            'Container selector: auto-cleanup.disposable=true' 'Docker endpoint: unix:///var/run/docker.sock'
-        exit 0
-        ;;
-    0:) ;;
-    *) echo "Usage: vps-docker-clean [--show-policy]" >&2; exit 2 ;;
-esac
+UTC = dt.timezone.utc
+IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}")
+DIGEST = re.compile(r"[^\s@]+@sha256:[0-9a-f]{64}")
 
-# Cleanup belongs to this host's rootful daemon, never an ambient remote context.
-unset DOCKER_CONTEXT DOCKER_HOST DOCKER_TLS DOCKER_TLS_VERIFY DOCKER_CERT_PATH
 
-if ! command -v "$DOCKER" >/dev/null 2>&1; then
-    echo "Cannot run cleanup: Docker CLI '$DOCKER' was not found." >&2
-    exit 1
-fi
+def timestamp(value):
+    if not isinstance(value, str):
+        raise ValueError("timestamp must be a string with a timezone")
+    result = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if result.tzinfo is None:
+        raise ValueError("timestamps must include a timezone")
+    return result
 
-if ! "$DOCKER" --host unix:///var/run/docker.sock info >/dev/null; then
-    echo "Cannot run cleanup: the local Docker daemon is not reachable." >&2
-    exit 1
-fi
 
-failures=0
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON setting '{key}'")
+        result[key] = value
+    return result
 
-# Record failures and continue other categories; the final exit reports the result.
-run_docker() {
-    echo "+ $DOCKER $*"
-    if "$DOCKER" --host unix:///var/run/docker.sock "$@"; then
+
+def docker(*args, capture=True):
+    command = [os.environ.get("DOCKER", "docker"), "--host", "unix:///var/run/docker.sock", *args]
+    result = subprocess.run(command, text=True, stdout=subprocess.PIPE if capture else None,
+                            timeout=120, check=False)
+    if result.returncode:
+        raise RuntimeError(f"Docker command failed ({result.returncode}): {' '.join(args)}")
+    return result.stdout
+
+
+def inspect(kind, reference):
+    rows = json.loads(docker(kind, "inspect", reference))
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+        raise ValueError(f"cannot resolve one {kind} object for {reference}")
+    return rows[0]
+
+
+def image_id(value):
+    if not isinstance(value, str) or not IMAGE_ID.fullmatch(value):
+        raise ValueError(f"invalid local image ID: {value!r}")
+    return value
+
+
+def container_images():
+    protected = set()
+    for container in docker("container", "ls", "-aq", "--no-trunc").splitlines():
+        reference = image_id(inspect("container", container)["Image"])
+        # A surviving container with a deleted source image cannot prove recovery.
+        if image_id(inspect("image", reference)["Id"]) != reference:
+            raise ValueError(f"container image {reference} does not resolve consistently")
+        protected.add(reference)
+    return protected
+
+
+def trusted_file(descriptor, description):
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(f"{description} must be a regular file")
+    if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
+        raise ValueError(f"{description} must be owned by the cleanup account and not writable by group or others")
+
+
+def read_inventory(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "rb") as stream:
+        trusted_file(stream.fileno(), f"protection inventory {path}")
+        raw = stream.read(1024 * 1024 + 1)
+    if len(raw) > 1024 * 1024:
+        raise ValueError("protection inventory exceeds 1 MiB")
+    return raw
+
+
+def load_protection(path, daemon_id):
+    raw = read_inventory(path)
+    inventory = json.loads(raw, object_pairs_hook=unique_object)
+    if set(inventory) != {"version", "daemon_id", "expires_at", "deployments", "recovery"}:
+        raise ValueError("protection inventory requires version, daemon_id, expires_at, deployments and recovery")
+    if type(inventory["version"]) is not int or inventory["version"] != 1:
+        raise ValueError("unsupported protection inventory version; expected 1")
+    if inventory["daemon_id"] != daemon_id:
+        raise ValueError("protection inventory belongs to a different Docker daemon")
+    expiry = timestamp(inventory["expires_at"])
+    if expiry <= dt.datetime.now(UTC):
+        raise ValueError("protection inventory has expired; deployment must reconcile and renew it")
+    deployments = inventory["deployments"]
+    if not isinstance(deployments, dict) or not deployments:
+        raise ValueError("protection inventory must name every deployment; empty inventory is rejected")
+    references = inventory["recovery"]
+    if not isinstance(references, list):
+        raise ValueError("recovery must be a list of locally retained repository digests")
+    references = list(references)
+    for name, deployment in deployments.items():
+        if not name or not isinstance(deployment, dict) or set(deployment) != {"current", "rollback"}:
+            raise ValueError(f"deployment {name!r} requires current and rollback digest lists")
+        for role in ("current", "rollback"):
+            values = deployment[role]
+            if not isinstance(values, list) or (role == "current" and not values):
+                raise ValueError(f"deployment {name!r} {role} must be a digest list; current cannot be empty")
+            references.extend(values)
+    protected = set()
+    for reference in references:
+        if not isinstance(reference, str) or not DIGEST.fullmatch(reference):
+            raise ValueError(f"protection requires an immutable repository digest: {reference!r}")
+        row = inspect("image", reference)
+        if reference not in (row.get("RepoDigests") or []):
+            raise ValueError(f"protected digest {reference} does not resolve consistently")
+        protected.add(image_id(row["Id"]))
+    return raw, expiry, protected
+
+
+def available_bytes(root):
+    usage = os.statvfs(root)
+    return usage.f_bavail * usage.f_frsize
+
+
+def assert_inventory_current(path, raw, expiry):
+    if read_inventory(path) != raw or dt.datetime.now(UTC) >= expiry:
+        raise ValueError("protection inventory changed or expired during cleanup; stopping further deletion")
+
+
+def retain_images(path, raw, expiry, protected, root, minimum_free, cutoff):
+    candidates = []
+    for reference in set(docker("image", "ls", "-aq", "--no-trunc").splitlines()):
+        reference = image_id(reference)
+        row = inspect("image", reference)
+        if image_id(row["Id"]) != reference:
+            raise ValueError(f"image {reference} does not resolve consistently")
+        candidates.append((timestamp(row["Created"]), reference))
+    failures = False
+    for created, reference in sorted(candidates):
+        assert_inventory_current(path, raw, expiry)
+        protected.update(container_images())
+        if reference in protected:
+            print(f"Retain protected image {reference}", flush=True)
+            continue
+        if created > cutoff and available_bytes(root) >= minimum_free:
+            continue
+        print(f"Remove unprotected image {reference} (created {created.isoformat()})", flush=True)
+        try:
+            # No parent pruning: an untagged parent can itself be protected.
+            assert_inventory_current(path, raw, expiry)
+            docker("image", "rm", "--no-prune", reference, capture=False)
+        except RuntimeError as error:
+            print(error, file=sys.stderr)
+            failures = True
+    free = available_bytes(root)
+    print(f"Docker filesystem available bytes: {free}; required: {minimum_free}", flush=True)
+    if free < minimum_free:
+        raise RuntimeError("Cannot meet the Docker filesystem free-space target with removable unprotected images; retained images and other data still occupy space")
+    return failures
+
+
+def main():
+    obsolete = {"BUILD_CACHE_UNTIL", "BUILD_CACHE_RESERVED", "ALLOW_BUILDX_PRUNE"} & os.environ.keys()
+    if obsolete:
+        raise ValueError("Cannot run cleanup with obsolete cache overrides; remove BUILD_CACHE_UNTIL, BUILD_CACHE_RESERVED and ALLOW_BUILDX_PRUNE. Cache is now managed by Docker GC; set its budget with install.sh --cache-gib.")
+    ages = {}
+    for key in ("CONTAINER_UNTIL", "NETWORK_UNTIL", "IMAGE_UNTIL"):
+        value = os.environ.get(key, "")
+        if not re.fullmatch(r"[1-9][0-9]*h", value):
+            raise ValueError(f"{key} must be positive whole hours (for example 24h); received {value!r}")
+        ages[key] = value
+    cutoff = dt.datetime.now(UTC) - dt.timedelta(hours=int(ages["IMAGE_UNTIL"][:-1]))
+    free_gib = os.environ.get("IMAGE_MIN_FREE_GIB", "0")
+    if not re.fullmatch(r"0|[1-9][0-9]*", free_gib):
+        raise ValueError("IMAGE_MIN_FREE_GIB must be whole GiB without leading zeros; 0 disables space pressure")
+    path = Path(os.environ.get("IMAGE_PROTECTION_FILE", "/etc/default/vps-docker-clean.images.json"))
+    if not path.is_absolute():
+        raise ValueError("IMAGE_PROTECTION_FILE must be an absolute path")
+    if sys.argv[1:] == ["--show-policy"]:
+        for key, value in ages.items():
+            print(f"{key}={value}")
+        print(f"IMAGE_MIN_FREE_GIB={free_gib}\nIMAGE_PROTECTION_FILE={path}")
+        print("Container selector: auto-cleanup.disposable=true\nDocker endpoint: unix:///var/run/docker.sock")
         return 0
-    else
-        status=$?
-    fi
-    failures=1
-    echo "Docker command failed ($status): $DOCKER $*" >&2
+    if sys.argv[1:]:
+        raise ValueError("Usage: vps-docker-clean [--show-policy]")
+    for key in ("DOCKER_CONTEXT", "DOCKER_HOST", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"):
+        os.environ.pop(key, None)
+    try:
+        info = json.loads(docker("info", "--format", "{{json .}}"))
+    except RuntimeError as error:
+        raise RuntimeError(f"local Docker daemon is not reachable: {error}") from error
+    if not isinstance(info["ID"], str) or not info["ID"]:
+        raise ValueError("Docker did not report its daemon identity")
+    root = info["DockerRootDir"]
+    available_bytes(root)
+    # Publishers must hold this same stable lock through publication and deployment.
+    descriptor = os.open(str(path) + ".lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "r+") as lock:
+        trusted_file(lock.fileno(), f"protection lock {path}.lock")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError(f"Protection lock {path}.lock is busy; deployment or another cleanup is in progress") from error
+        raw, expiry, protected = load_protection(path, info["ID"])
+        protected.update(container_images())
+        failures = False
+        for args in (("container", "prune", "-f", "--filter", f"until={ages['CONTAINER_UNTIL']}", "--filter", "label=auto-cleanup.disposable=true"),
+                     ("network", "prune", "-f", "--filter", f"until={ages['NETWORK_UNTIL']}")):
+            try:
+                assert_inventory_current(path, raw, expiry)
+                docker(*args, capture=False)
+            except RuntimeError as error:
+                print(error, file=sys.stderr)
+                failures = True
+        failures |= retain_images(path, raw, expiry, protected, root, int(free_gib) * 1024**3,
+                                  cutoff)
+        if failures:
+            raise RuntimeError("One or more Docker cleanup commands failed.")
     return 0
-}
 
-run_docker container prune -f --filter "until=$CONTAINER_UNTIL" --filter label=auto-cleanup.disposable=true
-run_docker network prune -f --filter "until=$NETWORK_UNTIL"
-run_docker image prune -af --filter "until=$IMAGE_UNTIL"
 
-if [ "$failures" -ne 0 ]; then
-    echo "One or more Docker cleanup commands failed." >&2
-    exit 1
-fi
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (OSError, ValueError, KeyError, TypeError, OverflowError, subprocess.TimeoutExpired, RuntimeError) as error:
+        print(f"Cannot complete Docker cleanup: {error}. Cleanup may be partial if removal has started.", file=sys.stderr)
+        sys.exit(1)

@@ -107,12 +107,15 @@ if PATH="$FAKE_ROOT/no-python-bin" "$REPO_DIR/scripts/install.sh" --root "$MERGE
     echo "install unexpectedly accepted Docker config without python3" >&2
     exit 1
 fi
-PATH="$FAKE_ROOT/no-python-bin" "$REPO_DIR/scripts/install.sh" \
+if PATH="$FAKE_ROOT/no-python-bin" "$REPO_DIR/scripts/install.sh" \
     --root "$MERGE_ROOT/no-python-skip" \
     --skip-docker-config \
     --skip-journald \
     --skip-btmp-logrotate \
-    --skip-apt-periodic >/dev/null
+    --skip-apt-periodic >"$MERGE_ROOT/no-python.err" 2>&1; then
+    echo "install accepted retention without python3" >&2; exit 1
+fi
+grep -q "python3 is required" "$MERGE_ROOT/no-python.err"
 
 mkdir -p "$FAKE_ROOT/dockerd-bin"
 for cmd in awk dirname grep python3 cat sed; do
@@ -982,6 +985,9 @@ if "$REPO_DIR/scripts/uninstall.sh" \
     exit 1
 fi
 
+export IMAGE_PROTECTION_FILE="$FAKE_ROOT/protection.json"
+cp "$REPO_DIR/tests/fixtures/image-protection.json" "$IMAGE_PROTECTION_FILE"
+
 FAKE_DOCKER_LOG="$FAKE_ROOT/docker.log" \
     CONTAINER_UNTIL=48h \
     NETWORK_UNTIL=72h \
@@ -995,7 +1001,7 @@ if grep -Eq -- 'builder|buildx' "$FAKE_ROOT/docker.log"; then
 fi
 grep -q -- 'container prune -f --filter until=48h --filter label=auto-cleanup.disposable=true' "$FAKE_ROOT/docker.log"
 grep -q -- 'network prune -f --filter until=72h' "$FAKE_ROOT/docker.log"
-grep -q -- 'image prune -af --filter until=1440h' "$FAKE_ROOT/docker.log"
+grep -q -- 'image rm --no-prune sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' "$FAKE_ROOT/docker.log"
 if grep -Eq 'volume prune|--volumes' "$FAKE_ROOT/docker.log"; then
     echo "cleanup script attempted volume pruning" >&2
     exit 1
@@ -1012,7 +1018,7 @@ if FAKE_DOCKER_LOG="$FAKE_ROOT/docker-fail-container.log" \
 fi
 grep -q -- 'container prune -f --filter until=24h' "$FAKE_ROOT/docker-fail-container.log"
 grep -q -- 'network prune -f --filter until=24h' "$FAKE_ROOT/docker-fail-container.log"
-grep -q -- 'image prune -af --filter until=24h' "$FAKE_ROOT/docker-fail-container.log"
+grep -q -- 'image rm --no-prune sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' "$FAKE_ROOT/docker-fail-container.log"
 grep -q -- 'Docker command failed (42)' "$FAKE_ROOT/docker-fail-container.err"
 grep -q -- 'One or more Docker cleanup commands failed.' "$FAKE_ROOT/docker-fail-container.err"
 

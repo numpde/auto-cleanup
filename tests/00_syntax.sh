@@ -13,7 +13,6 @@ for script in \
     "$REPO_DIR/scripts/uninstall.sh" \
     "$REPO_DIR/scripts/lib/common.sh" \
     "$REPO_DIR/scripts/lib/policy.sh" \
-    "$REPO_DIR/fixtures/bin/vps-docker-clean" \
     "$REPO_DIR/tests/check-manifest.sh" \
     "$REPO_DIR/tests/run-all.sh" \
     "$REPO_DIR/tests/00_syntax.sh" \
@@ -21,6 +20,7 @@ for script in \
     "$REPO_DIR/tests/02_container_posture.sh" \
     "$REPO_DIR/tests/30_functionality.sh" \
     "$REPO_DIR/tests/35_profiles.sh" \
+    "$REPO_DIR/tests/37_image_retention.sh" \
     "$REPO_DIR/tests/36_install_progress.sh" \
     "$REPO_DIR/tests/40_docs_contract.sh" \
     "$REPO_DIR/tests/root-metadata.sh" \
@@ -34,12 +34,13 @@ done
 
 bash -n "$REPO_DIR/scripts/test-container.sh"
 
-python3 - "$REPO_DIR/lib/merge-docker-daemon.py" <<'PY'
+python3 - "$REPO_DIR/lib/merge-docker-daemon.py" "$REPO_DIR/fixtures/bin/vps-docker-clean" "$REPO_DIR/tests/image_retention.py" "$REPO_DIR/tests/fixtures/fake-retention-docker.py" <<'PY'
 import pathlib
 import sys
 
-path = pathlib.Path(sys.argv[1])
-compile(path.read_text(encoding="utf-8"), str(path), "exec")
+for filename in sys.argv[1:]:
+    path = pathlib.Path(filename)
+    compile(path.read_text(encoding="utf-8"), str(path), "exec")
 PY
 
 echo "syntax ok"

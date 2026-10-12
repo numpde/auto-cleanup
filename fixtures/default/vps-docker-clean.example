@@ -13,3 +13,8 @@
 # CONTAINER_UNTIL=48h
 # NETWORK_UNTIL=72h
 # IMAGE_UNTIL=168h
+
+# 0 disables pressure; set a host-specific free-space floor.
+# IMAGE_MIN_FREE_GIB=5
+# IMAGE_PROTECTION_FILE=/etc/default/vps-docker-clean.images.json
+# Deployment owns that inventory and its adjacent .lock file; see README.

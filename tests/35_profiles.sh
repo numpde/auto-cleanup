@@ -138,6 +138,9 @@ assert data['builder']['gc']['policy'] == [
 ]
 PY
 
+export IMAGE_PROTECTION_FILE="$scratch/protection.json"
+cp "$REPO_DIR/tests/fixtures/image-protection.json" "$IMAGE_PROTECTION_FILE"
+
 # The installed command receives managed ages followed by explicit overrides.
 . "$REPO_DIR/scripts/lib/policy.sh"
 read_managed_policy "$stage/etc/default/vps-docker-clean.policy"
@@ -146,7 +149,7 @@ IMAGE_UNTIL=72h DOCKER_HOST=tcp://unwanted.example:2375 DOCKER_CONTEXT=unwanted 
     FAKE_DOCKER_LOG="$scratch/prune.log" DOCKER="$REPO_DIR/tests/fixtures/fake-docker.sh" \
     "$stage/usr/local/sbin/vps-docker-clean" >/dev/null
 grep -Fxq 'container prune -f --filter until=168h --filter label=auto-cleanup.disposable=true' "$scratch/prune.log"
-grep -Fxq 'image prune -af --filter until=72h' "$scratch/prune.log"
+grep -Fxq 'image rm --no-prune sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' "$scratch/prune.log"
 if grep -Eq 'volume|builder|buildx' "$scratch/prune.log"; then
     echo 'cleanup crossed its resource boundary' >&2; exit 1
 fi

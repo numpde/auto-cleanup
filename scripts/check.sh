@@ -164,6 +164,10 @@ if [ -n "$ROOT" ]; then
 fi
 
 check_executable "$(target "$PREFIX/sbin/vps-docker-clean")"
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "missing python3 for the installed Docker retention executor"
+    FAILED=1
+fi
 managed_policy=$(target "$ETC_DIR/default/vps-docker-clean.policy")
 check_file "$managed_policy"
 POLICY_VALID=0

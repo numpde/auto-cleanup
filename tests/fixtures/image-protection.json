@@ -1,0 +1,1 @@
+{"version":1,"daemon_id":"test-daemon","expires_at":"2099-01-01T00:00:00Z","deployments":{"test":{"current":["example.test/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],"rollback":[]}},"recovery":[]}
