@@ -468,7 +468,7 @@ non-regular files.
 Auto-cleanup is the single host executor for image age and filesystem free-space
 policy. Deployment tooling owns the complete protection inventory; it must
 include every deployed service and its locally retained rollback and recovery
-images, including digest-pinned Playwright used by deployment tasks. The installer
+images, including images needed by deployment tasks. The installer
 never manufactures this inventory or refreshes its lease. No deployment inventory
 writer or deployment lock participant is implemented in this repository; both
 must be implemented in the deployment tooling before host activation. The
@@ -485,12 +485,12 @@ Deployment writes this JSON as `IMAGE_PROTECTION_FILE` (root owned, mode `0600`)
   "daemon_id": "COPY_THE_LOCAL_DOCKER_INFO_ID",
   "expires_at": "2026-10-13T00:00:00Z",
   "deployments": {
-    "gui": {
-      "current": ["registry.example/gui@sha256:REPLACE_WITH_64_HEX_DIGEST"],
-      "rollback": ["registry.example/gui@sha256:REPLACE_WITH_64_HEX_DIGEST"]
+    "app": {
+      "current": ["registry.example/app@sha256:REPLACE_WITH_64_HEX_DIGEST"],
+      "rollback": ["registry.example/app@sha256:REPLACE_WITH_64_HEX_DIGEST"]
     }
   },
-  "recovery": ["registry.example/playwright@sha256:REPLACE_WITH_64_HEX_DIGEST"]
+  "recovery": ["registry.example/recovery@sha256:REPLACE_WITH_64_HEX_DIGEST"]
 }
 ```
 
@@ -502,11 +502,11 @@ All listed images must exist locally and resolve to the supplied repository
 digest. Remote-only rollback images do not count as retained local recovery.
 Inventory and lock files must be owned by the cleanup account (root for the
 installed service) and must not allow group or other writes. JSON duplicates,
-unknown fields, wrong daemon identity, missing digests, missing
-container source images and expired leases all block cleanup. A running container
-whose original image was deleted needs a verified recoverable replacement and a
-controlled recreation before retention can proceed. Adding a recovery digest
-does not silently waive the missing-source check.
+unknown fields, wrong daemon identity, missing listed digests and expired leases
+all block cleanup. Container image IDs are protected automatically, including
+references to images absent from the local image store. An absent container
+source image does not block cleanup of other images. Images explicitly listed
+for retention must still resolve locally.
 
 Every deployment publisher and this executor must use the same stable adjacent
 lock file (`IMAGE_PROTECTION_FILE` plus `.lock`). Hold an exclusive `flock` from
@@ -540,40 +540,22 @@ meet this target. If it cannot be reached, cleanup reports failure; application
 data, volumes, cache and other filesystem users can occupy the same filesystem.
 Use monitoring and a host-specific floor; this is not a hard disk quota.
 
-## Migrate the VPS cleanup job
+## Replace an existing cleanup schedule
 
-This is a migration plan for `root@94.176.182.209`; no host changes are performed
-by these repository changes. The reported 86 images, 10.66 GB of images and
-6.714 GB reclaimable are an earlier observation, not current inventory or an
-authorized deletion set.
+1. Identify existing scheduled image-pruning commands. Disable their schedules
+   and wait for any running cleanup to finish before preparing the replacement.
+2. Configure deployment tooling to publish the complete protection inventory and
+   participate in its shared lock. Ensure every listed digest resolves locally.
+3. Install with `--no-enable-timer` and select the desired profile and optional
+   free-space floor. Stop an already active `vps-docker-clean.timer` separately;
+   the install option does not stop it. Review the installer's other managed
+   policies and select skip flags for settings you intend to leave unmanaged.
+4. Review `/etc/default/vps-docker-clean.policy` and any overrides in
+   `/etc/default/vps-docker-clean`, then run `sudo ./scripts/check.sh --strict`.
+   Confirm the previous cleanup schedule is disabled
+   before enabling `vps-docker-clean.timer`. Its persistent timer may run
+   immediately; inspect the service result and actual filesystem free space.
 
-1. Inspect the unit or cron entry that runs `vote-mcp-server-safe-clean` and record
-   its schedule, executable and enablement for rollback. Identify any other host
-   image-pruning jobs. In the authorized maintenance window, disable those legacy
-   schedules and wait for any running cleanup to finish before pulling recovery
-   images or changing protection. Leave retention paused during preparation;
-   do not enable a competing timer.
-2. Deployment records the real current/rollback/recovery repository digests and
-   pulls locally required recovery images under the shared lock. Include
-   Playwright. Resolve the running GUI's missing original image with a verified
-   replacement and controlled recreation; a running container alone is not a
-   recoverable image. This step requires separate host-change authorization.
-3. Install with `--profile vps --no-enable-timer` after stopping any already active
-   `vps-docker-clean.timer` during the authorized maintenance window. The option
-   does not stop an existing timer. Stage/review generated files first; a real
-   install also manages logging, native local cache GC, journald, btmp and APT
-   unless their skip flags are selected. Docker restart is a separate activation
-   decision. Deployment publishes and validates its complete inventory before
-   any executor run. Configure a measured filesystem free-space floor and review
-   the 24-hour VPS creation-age default.
-4. Remove the disabled `vote-mcp-server-safe-clean` job, including its
-   `image prune --force` and `buildx prune --all --force --filter until=48h` calls.
-   Remove equivalent pruning from deployment timers. CI configures its own cache
-   retention; the host executor does not replace the old scheduled Buildx call.
-5. Verify the old job cannot run, then enable the existing
-   `vps-docker-clean.timer` as the sole host retention schedule. Its persistent
-   timer may run immediately. Inspect the first service result, protected image
-   resolution and actual filesystem free bytes. Never run the legacy pruner in
-   parallel. If retention fails, disable the new timer and correct inventory or
-   policy; do not restore the blanket legacy job without an explicit protection
-   review. Volumes remain untouched throughout.
+Use one host image-retention schedule. Keep CI builder-cache retention in CI.
+If cleanup fails, inspect its error and correct the protection inventory or
+policy before enabling further runs.

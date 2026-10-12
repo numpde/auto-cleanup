@@ -59,9 +59,6 @@ def container_images():
     protected = set()
     for container in docker("container", "ls", "-aq", "--no-trunc").splitlines():
         reference = image_id(inspect("container", container)["Image"])
-        # A surviving container with a deleted source image cannot prove recovery.
-        if image_id(inspect("image", reference)["Id"]) != reference:
-            raise ValueError(f"container image {reference} does not resolve consistently")
         protected.add(reference)
     return protected
 

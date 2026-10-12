@@ -90,9 +90,14 @@ state['images'] = state['images'][1:]
 result, log, remaining = exercise(state=state)
 assert result.returncode != 0 and 'prune' not in log
 state = copy.deepcopy(STATE)
-state['containers'] = {'broken-running-gui': 'sha256:' + 'f' * 64}
+# A container can reference an image absent from the local image store. Its
+# reference still protects that ID; it does not block unrelated retention.
+missing = 'sha256:' + 'f' * 64
+state['containers'] = {'existing-container': missing}
 result, log, remaining = exercise(state=state)
-assert result.returncode != 0 and 'prune' not in log
+assert result.returncode == 0 and remaining == {CURRENT, YOUNG}, result.stderr
+assert f'image inspect {missing}' not in log
+assert f'image rm --no-prune {OLD}' in log
 result, log, remaining = exercise(locked=True)
 assert result.returncode != 0 and 'prune' not in log
 
