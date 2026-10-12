@@ -5,6 +5,8 @@ REPO_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 . "$SCRIPT_DIR/lib/require-container.sh"
 python3 - "$REPO_DIR" <<'PY'
 import json
+import importlib.util
+import types
 import os
 from pathlib import Path
 import subprocess
@@ -51,5 +53,26 @@ with tempfile.TemporaryDirectory(prefix='auto-cleanup-json-', dir=os.environ['TM
     result = subprocess.run(command, text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
     assert json.loads(daemon.read_text())['unrelated'] == 1.25
+    spec = importlib.util.spec_from_file_location('daemon_merger', repo / 'lib/merge-docker-daemon.py')
+    merger = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(merger)
+    merger.time = types.SimpleNamespace(strftime=lambda *args: 'fixed', gmtime=lambda: ())
+    unrelated = root / 'unrelated'
+    dangling = daemon.with_name(daemon.name + '.auto-cleanup.bak.fixed')
+    dangling.symlink_to(unrelated)
+    backup = merger.backup_path(daemon)
+    assert backup != dangling
+    info = daemon.stat()
+    merger.copy_backup(daemon, backup, (info.st_uid, info.st_gid))
+    assert backup.is_file() and not backup.is_symlink() and not unrelated.exists()
+    assert backup.read_bytes() == daemon.read_bytes() and backup.stat().st_mode == info.st_mode
+    for occupied in (backup, dangling):
+        try:
+            merger.copy_backup(daemon, occupied, (info.st_uid, info.st_gid))
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError('occupied backup path was overwritten')
+    assert not unrelated.exists()
 print('daemon JSON boundaries ok')
 PY

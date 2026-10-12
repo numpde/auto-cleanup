@@ -108,21 +108,36 @@ def atomic_write(path, text, mode, owner):
 def backup_path(path):
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     candidate = path.with_name(f"{path.name}.auto-cleanup.bak.{stamp}")
-    if not candidate.exists():
+    if not candidate.exists() and not candidate.is_symlink():
         return candidate
     index = 1
     while True:
         indexed = path.with_name(f"{path.name}.auto-cleanup.bak.{stamp}.{index}")
-        if not indexed.exists():
+        if not indexed.exists() and not indexed.is_symlink():
             return indexed
         index += 1
 
 
 def copy_backup(src, dst, owner):
-    shutil.copy2(src, dst)
-    os.chown(dst, owner[0], owner[1])
-    with dst.open("rb") as handle:
-        os.fsync(handle.fileno())
+    fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as backup, src.open("rb") as source:
+            shutil.copyfileobj(source, backup)
+            backup.flush()
+            os.fchown(backup.fileno(), owner[0], owner[1])
+            shutil.copystat(src, backup.fileno())
+            os.fsync(backup.fileno())
+        dir_fd = os.open(dst.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except BaseException:
+        try:
+            os.unlink(dst)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def validate_raw_absolute_path(raw_path, label):
