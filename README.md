@@ -539,3 +539,41 @@ are not treated as actual freed space. Protected images are never removed to
 meet this target. If it cannot be reached, cleanup reports failure; application
 data, volumes, cache and other filesystem users can occupy the same filesystem.
 Use monitoring and a host-specific floor; this is not a hard disk quota.
+
+## Migrate the VPS cleanup job
+
+This is a migration plan for `root@94.176.182.209`; no host changes are performed
+by these repository changes. The reported 86 images, 10.66 GB of images and
+6.714 GB reclaimable are an earlier observation, not current inventory or an
+authorized deletion set.
+
+1. Inspect the unit or cron entry that runs `vote-mcp-server-safe-clean` and record
+   its schedule, executable and enablement for rollback. Identify any other host
+   image-pruning jobs. In the authorized maintenance window, disable those legacy
+   schedules and wait for any running cleanup to finish before pulling recovery
+   images or changing protection. Leave retention paused during preparation;
+   do not enable a competing timer.
+2. Deployment records the real current/rollback/recovery repository digests and
+   pulls locally required recovery images under the shared lock. Include
+   Playwright. Resolve the running GUI's missing original image with a verified
+   replacement and controlled recreation; a running container alone is not a
+   recoverable image. This step requires separate host-change authorization.
+3. Install with `--profile vps --no-enable-timer` after stopping any already active
+   `vps-docker-clean.timer` during the authorized maintenance window. The option
+   does not stop an existing timer. Stage/review generated files first; a real
+   install also manages logging, native local cache GC, journald, btmp and APT
+   unless their skip flags are selected. Docker restart is a separate activation
+   decision. Deployment publishes and validates its complete inventory before
+   any executor run. Configure a measured filesystem free-space floor and review
+   the 24-hour VPS creation-age default.
+4. Remove the disabled `vote-mcp-server-safe-clean` job, including its
+   `image prune --force` and `buildx prune --all --force --filter until=48h` calls.
+   Remove equivalent pruning from deployment timers. CI configures its own cache
+   retention; the host executor does not replace the old scheduled Buildx call.
+5. Verify the old job cannot run, then enable the existing
+   `vps-docker-clean.timer` as the sole host retention schedule. Its persistent
+   timer may run immediately. Inspect the first service result, protected image
+   resolution and actual filesystem free bytes. Never run the legacy pruner in
+   parallel. If retention fails, disable the new timer and correct inventory or
+   policy; do not restore the blanket legacy job without an explicit protection
+   review. Volumes remain untouched throughout.
