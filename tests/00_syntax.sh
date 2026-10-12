@@ -19,6 +19,7 @@ for script in \
     "$REPO_DIR/tests/01_manifest.sh" \
     "$REPO_DIR/tests/02_container_posture.sh" \
     "$REPO_DIR/tests/30_functionality.sh" \
+    "$REPO_DIR/tests/34_daemon_json.sh" \
     "$REPO_DIR/tests/35_profiles.sh" \
     "$REPO_DIR/tests/37_image_retention.sh" \
     "$REPO_DIR/tests/36_install_progress.sh" \

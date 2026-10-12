@@ -2,6 +2,7 @@
 """Merge owned logging and optional native GC settings, preserving other daemon keys."""
 import argparse
 import json
+import math
 import os
 import pathlib
 import re
@@ -18,6 +19,17 @@ EXPECTED_LOG_OPTS = {
 }
 
 
+def reject_json_constant(value):
+    raise ValueError(f"non-JSON numeric constant {value!r}")
+
+
+def parse_json_float(value):
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"JSON number {value!r} is outside the finite numeric range")
+    return number
+
+
 def load_json(path):
     try:
         stat_result = path.stat()
@@ -29,10 +41,10 @@ def load_json(path):
         return {}
     try:
         with path.open("r", encoding="utf-8") as handle:
-            data = json.load(handle)
+            data = json.load(handle, parse_constant=reject_json_constant, parse_float=parse_json_float)
     except UnicodeDecodeError as exc:
         raise SystemExit(f"{path}: invalid UTF-8: {exc}") from exc
-    except json.JSONDecodeError as exc:
+    except ValueError as exc:
         raise SystemExit(f"{path}: invalid JSON: {exc}") from exc
     except OSError as exc:
         raise SystemExit(f"{path}: cannot read: {exc}") from exc
@@ -42,6 +54,9 @@ def load_json(path):
 
 
 def validate_policy(policy, path):
+    extra = policy.keys() - {"log-driver", "log-opts"}
+    if extra:
+        raise SystemExit(f"{path}: logging policy cannot change unrelated daemon keys: {sorted(extra)}")
     log_driver = policy.get("log-driver")
     if log_driver is None:
         raise SystemExit(f"{path}: missing log-driver")
@@ -182,9 +197,11 @@ def main():
             raise SystemExit(f"Docker logging or cache policy differs from the installed settings: {daemon_path}")
         return 0
 
-    output = json.dumps(merged, indent=2, sort_keys=True) + "\n"
+    output = json.dumps(merged, indent=2, sort_keys=True, allow_nan=False) + "\n"
     if args.output_json is not None:
         output_path = pathlib.Path(args.output_json)
+        if output_path == daemon_path:
+            raise SystemExit(f"{output_path}: output path must differ from daemon-json; use the normal merge mode to update it with a backup")
         reject_symlink_parents(output_path)
         if output_path.is_symlink():
             raise SystemExit(f"{output_path}: refusing to replace symlink")
