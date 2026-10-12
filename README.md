@@ -82,7 +82,9 @@ blocks the entire cleanup service, including container and network pruning.
 When replacing an existing cleanup schedule, disable its image-pruning jobs and
 wait for any active run to finish before preparing the replacement. Use one host
 image-retention schedule. Stop an already active `vps-docker-clean.timer` before
-changing its installation; `--no-enable-timer` does not stop it.
+changing its installation, then wait for any running cleanup service to finish.
+Stopping the timer does not stop an existing run; `--no-enable-timer` does not
+stop the timer.
 
 ### 3. Install without enabling cleanup
 
@@ -164,9 +166,10 @@ Run `./scripts/install.sh --help` for the complete CLI.
 
 Use `--no-service-actions` for file-only installation where systemd is unavailable.
 Service actions are automatically skipped with `--root` or custom `--etc-dir`.
-Custom paths must be absolute, exclude `/`, `//` prefixes and dot components,
-and contain no whitespace or shell/template metacharacters. The scripts reject
-unsupported paths before writing.
+`--root`, `--prefix` and `--etc-dir` must be absolute paths other than `/`.
+They must not start with `//` or contain `.` or `..` path components. Whitespace,
+`&`, `|`, backslashes, `%`, `#`, `;`, `$`, quotes and backticks are rejected
+before writing.
 
 ## Image protection
 
@@ -386,8 +389,23 @@ the existing log, then inspect service results, the next trigger and file sizes.
 
 ## Uninstall
 
+Preview removal first:
+
 ```sh
 sudo ./scripts/uninstall.sh --dry-run
+```
+
+On a live host, stop the timer and wait for any running cleanup service to finish.
+Stopping the timer prevents scheduled runs but does not stop an existing run:
+
+```sh
+sudo systemctl stop vps-docker-clean.timer
+sudo systemctl status vps-docker-clean.service
+```
+
+Once no cleanup run remains:
+
+```sh
 sudo ./scripts/uninstall.sh
 ```
 
@@ -410,7 +428,8 @@ sudo ./scripts/uninstall.sh \
   --restore-docker-backup /etc/docker/daemon.json.auto-cleanup.bak.YYYYMMDDTHHMMSSZ
 ```
 
-The backup must be an absolute path to a regular file, not a symlink. Restore
+The backup must be an absolute path to a regular file, not a symlink, and must
+follow the [installation path restrictions](#installation-options). Restore
 preserves metadata where permitted and refuses a symlink/non-regular destination.
 With `--root`, the backup is read from the current filesystem and the restore
 destination is staged. Restart Docker to activate restored settings; recreate
