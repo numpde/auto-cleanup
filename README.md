@@ -12,7 +12,7 @@ repository supplies the reader of that inventory, not its publisher.
 ## Requirements and defaults
 
 Use a complete checkout on a Debian/Ubuntu-style systemd host with Python 3,
-Docker CLI, logrotate, the distro's APT periodic machinery, and standard shell
+Docker CLI, logrotate, apt-config, the distro's APT periodic machinery, and standard shell
 utilities. Python is required for cleanup even with `--skip-docker-config`.
 Managed local build-cache limits require Docker Engine 28+ and a qualifying
 `dockerd` binary on a real host; staging without `dockerd` reports that target
@@ -351,10 +351,14 @@ logging flags; resolve those before restarting Docker. Managed files and their
 existing parent directories cannot be symlinks, and destinations cannot be
 non-regular files.
 
-APT cleanup uses the distro's existing timers and `apt.systemd.daily`. Installation
-skips its fixture when an active positive or `"always"` autoclean/clean interval
-already exists; update-only or disabled settings do not count. Otherwise it
-installs the defaults above. Use `--skip-apt-periodic` to keep APT policy external.
+APT cleanup uses the distro's existing timers and `apt.systemd.daily`.
+`apt-config` determines effective settings, including filename eligibility,
+configuration order and `apt.conf`. Installation preserves existing enabled
+cleanup; update-only or disabled intervals do not count. Before installing its
+fixture, it checks a temporary candidate configuration. If other settings would
+leave cleanup disabled, installation fails before writing managed files; correct
+those settings or use `--skip-apt-periodic`. Strict checks also require effective
+cleanup to remain enabled. The repo-owned fixture is refreshed on reinstall.
 
 For btmp, installation skips its fixture when an existing active-looking stanza
 contains `/var/log/btmp` and `maxsize 50M`. A stanza without that size threshold

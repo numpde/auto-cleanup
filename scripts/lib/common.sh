@@ -84,14 +84,6 @@ assert_parent_path_safe() {
     IFS=$old_ifs
 }
 
-has_existing_apt_cleanup_policy() {
-    dir=$1
-    apt_cleanup_re='^[[:space:]]*APT::Periodic::(AutocleanInterval|CleanInterval)'
-    apt_cleanup_re=$apt_cleanup_re'[[:space:]]+"([1-9][0-9]*|always)"[[:space:]]*;'
-    [ -d "$dir" ] || return 1
-    grep -ERqs "$apt_cleanup_re" "$dir" 2>/dev/null
-}
-
 has_existing_btmp_policy() {
     dir=$1
     [ -d "$dir" ] || return 1

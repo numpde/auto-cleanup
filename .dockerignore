@@ -79,3 +79,5 @@ tests/lib/**
 !tests/fixtures/image-protection.json
 !tests/34_daemon_json.sh
 !tests/38_policy_integrity.sh
+!lib/apt-cleanup-policy.py
+!tests/39_native_apt.sh

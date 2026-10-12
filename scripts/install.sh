@@ -395,6 +395,14 @@ DOCKER_ROLLBACK_TMP=
 DOCKER_ROLLBACK_HAD_FILE=0
 trap 'rm -f "$TMP_SERVICE" "$TMP_TIMER" "$TMP_POLICY" "$DOCKER_VALIDATE_TMP" "$DOCKER_ROLLBACK_TMP"' EXIT INT TERM
 
+APT_ACTION=skip
+if [ "$SKIP_APT_PERIODIC" -eq 0 ]; then
+    require_file "$REPO_DIR/lib/apt-cleanup-policy.py"
+    APT_ACTION=$(python3 "$REPO_DIR/lib/apt-cleanup-policy.py" \
+        --apt-dir "$(target "$ETC_DIR/apt")" \
+        --candidate-policy "$REPO_DIR/fixtures/apt/10periodic-cleanup")
+fi
+
 prevalidate_docker_config
 
 assert_install_destination "$BIN_DIR/vps-docker-clean"
@@ -452,7 +460,7 @@ if [ "$SKIP_BTMP_LOGROTATE" -eq 0 ]; then
     fi
 fi
 if [ "$SKIP_APT_PERIODIC" -eq 0 ]; then
-    if ! has_existing_apt_cleanup_policy "$APT_CONF_DIR"; then
+    if [ "$APT_ACTION" = install ]; then
         install_file \
             "$REPO_DIR/fixtures/apt/10periodic-cleanup" \
             "$APT_CONF_DIR/90auto-cleanup-periodic" \

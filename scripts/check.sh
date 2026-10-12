@@ -254,10 +254,11 @@ if [ "$SKIP_APT_PERIODIC" -eq 0 ]; then
         fi
     elif [ -e "$apt_periodic" ] || [ -L "$apt_periodic" ]; then
         check_file "$apt_periodic"
-    elif has_existing_apt_cleanup_policy "$(target "$ETC_DIR/apt/apt.conf.d")"; then
-        echo "ok      existing APT cleanup settings found"
+    fi
+    if python3 "$REPO_DIR/lib/apt-cleanup-policy.py" --apt-dir "$(target "$ETC_DIR/apt")"; then
+        echo "ok      effective APT cleanup settings"
     else
-        echo "missing APT periodic cleanup settings"
+        echo "bad     effective APT cleanup settings"
         FAILED=1
     fi
 fi

@@ -31,6 +31,12 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 SH
+cat > "$scratch/repo/lib/apt-cleanup-policy.py" <<'PY'
+import sys
+assert sys.argv[1:3] == ['--apt-dir', '/etc/apt']
+assert len(sys.argv) == 5 and sys.argv[3] == '--candidate-policy'
+print('install')
+PY
 cat > "$scratch/bin/systemctl" <<'SH'
 #!/bin/sh
 set -eu
