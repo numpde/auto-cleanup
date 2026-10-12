@@ -13,7 +13,7 @@ to [keep selected tags or use a deployment inventory](#2-choose-image-protection
 
 ## Requirements and defaults
 
-Use a complete checkout on a Debian/Ubuntu-style systemd host with Python 3.11+,
+Use a complete checkout on a Debian/Ubuntu-style systemd host with Python 3.8+,
 Docker CLI, logrotate, apt-config, the distro's APT periodic machinery, and standard shell
 utilities. Python is required for cleanup even with `--skip-docker-config`.
 Managed local build-cache limits require Docker Engine 28+ and a qualifying
@@ -296,7 +296,9 @@ Use the immutable repository digests in `RepoDigests`. Every listed digest must
 resolve locally to that same digest. Remote-only images do
 not count as retained local recovery. The inventory must name at least one deployment. Each deployment needs a
 nonempty `current` list; `rollback` and `recovery` may be empty when none are deliberately retained.
-Timestamps require a timezone, for example `2030-01-01T00:00:00Z`.
+Timestamps use `YYYY-MM-DDTHH:MM:SS` with `Z` or an explicit `±HH:MM` timezone,
+for example `2030-01-01T00:00:00Z`. Optional fractional seconds accept 1–9 digits;
+comparisons use microsecond precision.
 
 Keep the inventory owned by root for the installed service as a regular file,
 not a symlink, without group or other write permission; use mode `0600`. Missing,
@@ -532,7 +534,8 @@ make test
 make test/all
 ```
 
-`make test` runs the Debian suite. `make test/all` adds Ubuntu, build-context
+`make test` runs the Debian 12 suite. `make test/all` adds Ubuntu 20.04 (Python 3.8),
+Ubuntu 24.04, build-context
 canaries and root metadata checks. The broad suites run without root or
 capabilities, with a read-only filesystem and an explicit build-context
 allowlist. Test-image builds need engine access and network when dependencies

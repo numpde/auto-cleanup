@@ -13,15 +13,23 @@ import sys
 UTC = dt.timezone.utc
 IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}")
 DIGEST = re.compile(r"[^\s@]+@sha256:[0-9a-f]{64}")
+TIMESTAMP = re.compile(
+    r"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})"
+    r"(?:\.([0-9]{1,9}))?(Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])"
+)
 
 
 def timestamp(value):
     if not isinstance(value, str):
         raise ValueError("timestamp must be a string with a timezone")
-    result = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if result.tzinfo is None:
-        raise ValueError("timestamps must include a timezone")
-    return result
+    parts = TIMESTAMP.fullmatch(value)
+    if parts is None:
+        raise ValueError("timestamp must use YYYY-MM-DDTHH:MM:SS, optional 1-9 fractional digits, and Z or a ±HH:MM timezone")
+    seconds, fraction, timezone = parts.groups()
+    # Docker reports nanoseconds; datetime stores microseconds. Truncate, never round.
+    fraction = "." + fraction[:6].ljust(6, "0") if fraction else ""
+    timezone = "+00:00" if timezone == "Z" else timezone
+    return dt.datetime.fromisoformat(seconds + fraction + timezone)
 
 
 def unique_object(pairs):

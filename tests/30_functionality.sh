@@ -142,18 +142,26 @@ if command -v logrotate >/dev/null 2>&1; then
 fi
 
 if command -v systemd-analyze >/dev/null 2>&1; then
-    cat > "$ROOT/etc/systemd/system/sysinit.target" <<'EOF'
+    VERIFY_UNITS="$ROOT/verify-units"
+    mkdir -p "$VERIFY_UNITS"
+    cat > "$VERIFY_UNITS/sysinit.target" <<'EOF'
 [Unit]
 Description=Minimal test sysinit target
 EOF
-    cat > "$ROOT/etc/systemd/system/timers.target" <<'EOF'
+    cat > "$VERIFY_UNITS/timers.target" <<'EOF'
 [Unit]
 Description=Minimal test timers target
 EOF
-    systemd-analyze --root="$ROOT" verify \
-        /etc/systemd/system/vps-docker-clean.service \
-        /etc/systemd/system/vps-docker-clean.timer >/dev/null 2>&1 || {
+    # Older systemd cannot verify with --root; relocate only the staged executable.
+    grep -Fxq 'ExecStart=/usr/local/sbin/vps-docker-clean' "$ROOT/etc/systemd/system/vps-docker-clean.service"
+    sed "s|^ExecStart=/usr/local/sbin/vps-docker-clean$|ExecStart=$ROOT/usr/local/sbin/vps-docker-clean|" \
+        "$ROOT/etc/systemd/system/vps-docker-clean.service" > "$VERIFY_UNITS/vps-docker-clean.service"
+    cp "$ROOT/etc/systemd/system/vps-docker-clean.timer" "$VERIFY_UNITS/"
+    SYSTEMD_UNIT_PATH="$VERIFY_UNITS" systemd-analyze verify \
+        "$VERIFY_UNITS/vps-docker-clean.service" \
+        "$VERIFY_UNITS/vps-docker-clean.timer" >"$ROOT/systemd-verify.log" 2>&1 || {
             echo "systemd unit verification failed" >&2
+            cat "$ROOT/systemd-verify.log" >&2
             exit 1
         }
 fi

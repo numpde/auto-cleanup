@@ -50,11 +50,13 @@ fi
 
 readonly debian_base_image="docker.io/library/debian:12-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df"
 readonly ubuntu_base_image="docker.io/library/ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90"
+readonly ubuntu_focal_base_image="docker.io/library/ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214"
 
 lane_base_image() {
   case "$1" in
     debian-12-slim) printf '%s\n' "$debian_base_image" ;;
     ubuntu-24.04) printf '%s\n' "$ubuntu_base_image" ;;
+    ubuntu-20.04) printf '%s\n' "$ubuntu_focal_base_image" ;;
     *)
       echo "Unknown matrix lane: $1" >&2
       exit 2
@@ -64,7 +66,7 @@ lane_base_image() {
 
 lane_image_tag() {
   case "$1" in
-    debian-12-slim|ubuntu-24.04) printf 'auto-cleanup-test:%s\n' "$1" ;;
+    debian-12-slim|ubuntu-24.04|ubuntu-20.04) printf 'auto-cleanup-test:%s\n' "$1" ;;
     *)
       echo "Unknown matrix lane: $1" >&2
       exit 2
@@ -250,7 +252,7 @@ case "$mode" in
     run_broad_lane debian-12-slim
     ;;
   test/matrix)
-    for lane in debian-12-slim ubuntu-24.04; do
+    for lane in ubuntu-20.04 debian-12-slim ubuntu-24.04; do
       build_image "$lane"
       run_broad_lane "$lane"
     done

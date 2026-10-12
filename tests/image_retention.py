@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import runpy
 import subprocess
 import tempfile
 
@@ -15,12 +16,41 @@ YOUNG = 'sha256:' + 'c' * 64
 DIGEST = 'example.test/app@sha256:' + 'd' * 64
 TAG = 'example.test/app:latest'
 STATE = {'images': [
-    {'Id': CURRENT, 'RepoDigests': [DIGEST], 'RepoTags': [TAG], 'Created': '2020-01-01T00:00:00Z'},
-    {'Id': OLD, 'Created': '2020-01-01T00:00:00Z'},
+    {'Id': CURRENT, 'RepoDigests': [DIGEST], 'RepoTags': [TAG], 'Created': '2020-01-01T00:00:00.123456789Z'},
+    {'Id': OLD, 'Created': '2020-01-01T00:00:00.12345678Z'},
     {'Id': YOUNG, 'Created': dt.datetime.now(dt.timezone.utc).isoformat()},
 ], 'containers': {}}
-INVENTORY = {'version': 1, 'daemon_id': 'test-daemon', 'expires_at': '2099-01-01T00:00:00Z',
+INVENTORY = {'version': 1, 'daemon_id': 'test-daemon', 'expires_at': '2099-01-01T00:00:00.123456789+03:00',
              'deployments': {'app': {'current': [DIGEST], 'rollback': []}}, 'recovery': []}
+
+
+timestamp = runpy.run_path(str(REPO / 'fixtures/bin/vps-docker-clean'))['timestamp']
+for zone, offset in [('Z', 0), ('+03:00', 180), ('-05:30', -330)]:
+    expected_zone = dt.timezone(dt.timedelta(minutes=offset))
+    assert timestamp('2020-02-29T12:34:56' + zone) == dt.datetime(2020, 2, 29, 12, 34, 56, tzinfo=expected_zone)
+    for digits in range(1, 10):
+        fraction = '123456789'[:digits]
+        expected = dt.datetime(2020, 2, 29, 12, 34, 56,
+                               int(fraction[:6].ljust(6, '0')), tzinfo=expected_zone)
+        parsed = timestamp('2020-02-29T12:34:56.' + fraction + zone)
+        assert parsed == expected and parsed.utcoffset() == expected.utcoffset(), parsed
+
+malformed_timestamps = [
+    '2099-01-01T00:00:00', '2099-01-01', '2099-02-29T00:00:00Z',
+    '2099-13-01T00:00:00Z', '2099-01-01T24:00:00Z', '2099-01-01T00:60:00Z',
+    '2099-01-01T00:00:60Z', '2099-01-01T00:00:00.Z',
+    '2099-01-01T00:00:00.1234567890Z', '2099-01-01T00:00:00+24:00',
+    '2099-01-01T00:00:00+03:60', '2099-01-01T00:00:00-03:60',
+    '2099-01-01T00:00:00+0300', '2099-01-01T00:00:00+03:00:01',
+    '2099-01-01 00:00:00Z', '2099-01-01T00:00:00Zjunk',
+]
+for value in malformed_timestamps + [None, 2099]:
+    try:
+        timestamp(value)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(f'malformed timestamp accepted: {value!r}')
 
 
 def exercise(inventory=INVENTORY, state=STATE, budget='0', locked=False, inventory_mode=0o600,
@@ -80,6 +110,10 @@ for role in ('rollback', 'recovery'):
     assert result.returncode == 0 and OLD in remaining, result.stderr
 
 invalid = [None, '{}', '{"version":1,"version":1}']
+for value in malformed_timestamps:
+    inventory = copy.deepcopy(INVENTORY)
+    inventory['expires_at'] = value
+    invalid.append(inventory)
 for key, value in [('expires_at', '2000-01-01T00:00:00Z'), ('expires_at', None),
                    ('daemon_id', 'other-daemon'), ('deployments', {})]:
     inventory = copy.deepcopy(INVENTORY)
@@ -92,6 +126,13 @@ for inventory in invalid:
     result, log, remaining = exercise(inventory)
     assert result.returncode != 0 and 'prune' not in log and 'image rm' not in log, (result.stderr, log)
     assert 'Traceback' not in result.stderr, result.stderr
+
+for value in malformed_timestamps:
+    state = copy.deepcopy(STATE)
+    state['images'][1]['Created'] = value
+    result, log, remaining = exercise(state=state)
+    assert result.returncode != 0 and 'image rm' not in log, (result.stderr, log)
+    assert remaining == {CURRENT, OLD, YOUNG} and 'Traceback' not in result.stderr
 
 state = copy.deepcopy(STATE)
 state['images'] = state['images'][1:]

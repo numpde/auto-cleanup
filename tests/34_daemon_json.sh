@@ -5,7 +5,9 @@ REPO_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 . "$SCRIPT_DIR/lib/require-container.sh"
 python3 - "$REPO_DIR" <<'PY'
 import json
+import contextlib
 import importlib.util
+import io
 import types
 import os
 from pathlib import Path
@@ -79,23 +81,25 @@ with tempfile.TemporaryDirectory(prefix='auto-cleanup-json-', dir=os.environ['TM
     def cleanup_failure(*args):
         raise PermissionError('injected cleanup denial')
     primary = OSError('injected replacement failure')
-    with patch.object(merger.os, 'replace', side_effect=primary), patch.object(merger.os, 'unlink', side_effect=cleanup_failure):
+    diagnostics = io.StringIO()
+    with contextlib.redirect_stderr(diagnostics), patch.object(merger.os, 'replace', side_effect=primary), patch.object(merger.os, 'unlink', side_effect=cleanup_failure):
         try:
             merger.atomic_write(root / 'failed.json', '{}', 0o600, None)
         except OSError as error:
             assert error is primary
-            rendered = ''.join(traceback.format_exception(error))
+            rendered = diagnostics.getvalue() + ''.join(traceback.format_exception(type(error), error, error.__traceback__))
             assert 'injected replacement failure' in rendered and 'injected cleanup denial' in rendered
             assert 'Could not remove temporary daemon file' in rendered
         else:
             raise AssertionError('replacement failure was hidden')
     primary = OSError('injected backup copy failure')
-    with patch.object(merger.shutil, 'copyfileobj', side_effect=primary), patch.object(merger.os, 'unlink', side_effect=cleanup_failure):
+    diagnostics = io.StringIO()
+    with contextlib.redirect_stderr(diagnostics), patch.object(merger.shutil, 'copyfileobj', side_effect=primary), patch.object(merger.os, 'unlink', side_effect=cleanup_failure):
         try:
             merger.copy_backup(daemon, root / 'failed-backup', (info.st_uid, info.st_gid))
         except OSError as error:
             assert error is primary
-            rendered = ''.join(traceback.format_exception(error))
+            rendered = diagnostics.getvalue() + ''.join(traceback.format_exception(type(error), error, error.__traceback__))
             assert 'injected backup copy failure' in rendered and 'injected cleanup denial' in rendered
             assert 'Could not remove incomplete daemon backup' in rendered
         else:
@@ -111,12 +115,13 @@ with tempfile.TemporaryDirectory(prefix='auto-cleanup-json-', dir=os.environ['TM
         if sync_calls == 2:
             raise primary
         return real_fsync(descriptor)
-    with patch.object(merger.os, 'fsync', side_effect=fail_directory_sync):
+    diagnostics = io.StringIO()
+    with contextlib.redirect_stderr(diagnostics), patch.object(merger.os, 'fsync', side_effect=fail_directory_sync):
         try:
             merger.atomic_write(synced, 'new', 0o600, None)
         except OSError as error:
             assert error is primary and synced.read_text() == 'new'
-            rendered = ''.join(traceback.format_exception(error))
+            rendered = diagnostics.getvalue() + ''.join(traceback.format_exception(type(error), error, error.__traceback__))
             assert str(synced) in rendered and 'Replaced' in rendered
             assert 'directory durability could not be confirmed' in rendered
         else:

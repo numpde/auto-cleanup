@@ -9,7 +9,7 @@ for kind in backup uncapped duplicate wrong-size; do
     stage=$scratch/$kind
     mkdir -p "$stage/etc/logrotate.d"
     case "$kind" in
-        backup) cp "$REPO_DIR/fixtures/logrotate/btmp" "$stage/etc/logrotate.d/btmp.bak" ;;
+        backup) cp "$REPO_DIR/fixtures/logrotate/btmp" "$stage/etc/logrotate.d/btmp~" ;;
         uncapped) printf '%s\n' '/var/log/btmp {' ' monthly' ' missingok' '}' > "$stage/etc/logrotate.d/btmp" ;;
         duplicate)
             cp "$REPO_DIR/fixtures/logrotate/btmp" "$stage/etc/logrotate.d/one"

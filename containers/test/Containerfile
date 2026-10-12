@@ -16,11 +16,15 @@ RUN apt-get update \
         gawk \
         grep \
         logrotate \
+        passwd \
         python3 \
         sed \
         systemd \
         util-linux \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 65532 test-runner \
+    && useradd --uid 65532 --gid 65532 --no-create-home --no-log-init \
+        --shell /usr/sbin/nologin test-runner
 
 WORKDIR /work
 COPY . /work

@@ -6,6 +6,7 @@ REPO_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 . "$SCRIPT_DIR/lib/require-container.sh"
 
 echo "syntax"
+python3 --version
 
 for script in \
     "$REPO_DIR/scripts/install.sh" \

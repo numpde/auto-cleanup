@@ -99,15 +99,15 @@ def atomic_write(path, text, mode, owner):
             os.fsync(dir_fd)
         finally:
             os.close(dir_fd)
-    except Exception as error:
+    except Exception:
         if replaced:
-            error.add_note(f"Replaced {path}; directory durability could not be confirmed.")
+            print(f"Replaced {path}; directory durability could not be confirmed.", file=sys.stderr)
         try:
             os.unlink(tmp_name)
         except FileNotFoundError:
             pass
         except OSError as cleanup_error:
-            error.add_note(f"Could not remove temporary daemon file {tmp_name}: {cleanup_error}")
+            print(f"Could not remove temporary daemon file {tmp_name}: {cleanup_error}", file=sys.stderr)
         raise
 
 
@@ -138,13 +138,13 @@ def copy_backup(src, dst, owner):
             os.fsync(dir_fd)
         finally:
             os.close(dir_fd)
-    except BaseException as error:
+    except BaseException:
         try:
             os.unlink(dst)
         except FileNotFoundError:
             pass
         except OSError as cleanup_error:
-            error.add_note(f"Could not remove incomplete daemon backup {dst}: {cleanup_error}")
+            print(f"Could not remove incomplete daemon backup {dst}: {cleanup_error}", file=sys.stderr)
         raise
 
 
