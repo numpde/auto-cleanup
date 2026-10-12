@@ -20,7 +20,7 @@ grep -q '| Docker logs | `local` driver, `10m` x `3`, compressed |' "$readme"
 grep -q '| Native build-cache budget | 1 GiB | 40 GiB |' "$readme"
 grep -q 'auto-cleanup.disposable=true' "$readme"
 grep -q '| journald | `SystemMaxUse=300M`, `SystemKeepFree=1G`, `MaxRetentionSec=14day` |' "$readme"
-grep -q '| btmp | rotate at `50M`, keep 1 rotated file |' "$readme"
+grep -q '| btmp | rotate at `50M`, keep 1 compressed rotated file |' "$readme"
 grep -q '| APT cache | autoclean every 7 days, clean every 30 days |' "$readme"
 
 grep -Eq '"log-driver"[[:space:]]*:[[:space:]]*"local"' "$REPO_DIR/fixtures/docker/daemon-log-policy.json"

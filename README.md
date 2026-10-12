@@ -49,7 +49,7 @@ Shared policy:
 | --- | --- |
 | Docker logs | `local` driver, `10m` x `3`, compressed |
 | journald | `SystemMaxUse=300M`, `SystemKeepFree=1G`, `MaxRetentionSec=14day` |
-| btmp | rotate at `50M`, keep 1 rotated file |
+| btmp | rotate at `50M`, keep 1 compressed rotated file |
 | APT cache | autoclean every 7 days, clean every 30 days |
 
 This repo intentionally does not install jobs that run:
@@ -254,6 +254,30 @@ filesystem; only the restore destination is staged under `--root`.
 After restoring a Docker daemon backup on a real host, restart Docker and
 recreate affected containers when convenient so the restored daemon settings are
 actually in use.
+
+## Install btmp rotation only
+
+For a Debian/Ubuntu systemd host needing only failed-login log rotation, install
+`logrotate` and use `fixtures/logrotate/btmp` as `/etc/logrotate.d/btmp`.
+Back up the previous policy outside `/etc/logrotate.d` and confirm there is only
+one active stanza for `/var/log/btmp`; do not install a second
+`auto-cleanup-btmp` stanza. This manual lane leaves Docker, journald, and APT
+cleanup policy untouched.
+
+Install `examples/logrotate.timer.d/hourly.conf` as
+`/etc/systemd/system/logrotate.timer.d/hourly.conf`, run
+`logrotate --debug /etc/logrotate.conf`, then reload systemd, enable/restart
+`logrotate.timer`, and start `logrotate.service` once. Use a normal service run,
+not forced rotation of all package logs. The drop-in schedules the distro's
+logrotate service hourly and therefore also checks its other log policies hourly.
+It is a manual example, not installed by `scripts/install.sh`.
+
+The btmp policy rotates monthly or when an hourly check sees more than `50M`,
+retains one compressed archive, and creates the replacement with mode `0660`
+and owner `root:utmp`. Growth between checks can exceed `50M`; this is not a
+hard disk quota. The first run compresses the existing large log, so confirm
+free space for compression before starting it. Check the service result, the
+next timer trigger, and the active and archived btmp file sizes afterwards.
 
 ## Notes
 
