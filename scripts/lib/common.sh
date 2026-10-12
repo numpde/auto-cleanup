@@ -83,20 +83,3 @@ assert_parent_path_safe() {
     done
     IFS=$old_ifs
 }
-
-has_existing_btmp_policy() {
-    dir=$1
-    [ -d "$dir" ] || return 1
-    for file in "$dir"/*; do
-        [ -f "$file" ] || continue
-        if awk '
-            /^[[:space:]]*[^#{}]*\/var\/log\/btmp($|[[:space:]{}])/ { in_btmp = 1; next }
-            in_btmp && /^[[:space:]]*\}/ { in_btmp = 0; next }
-            in_btmp && /^[[:space:]]*maxsize 50M$/ { found = 1 }
-            END { exit found ? 0 : 1 }
-        ' "$file" 2>/dev/null; then
-            return 0
-        fi
-    done
-    return 1
-}

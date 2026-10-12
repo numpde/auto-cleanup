@@ -360,12 +360,15 @@ leave cleanup disabled, installation fails before writing managed files; correct
 those settings or use `--skip-apt-periodic`. Strict checks also require effective
 cleanup to remain enabled. The repo-owned fixture is refreshed on reinstall.
 
-For btmp, installation skips its fixture when an existing active-looking stanza
-contains `/var/log/btmp` and `maxsize 50M`. A stanza without that size threshold
-does not prevent fixture installation. Check for an existing btmp stanza before
-installing; retain one active stanza and use `--skip-btmp-logrotate` when managing
-it elsewhere. Strict checks accept the matching existing btmp or APT policy;
-component installs must use matching checker skip flags.
+For btmp, native logrotate directory inspection determines which files are
+selected and the effective size limit. Matching external policy is preserved.
+An existing btmp stanza with no matching limit, duplicate entries or configuration
+parse errors stops installation before managed writes; update the existing
+stanza or use `--skip-btmp-logrotate`. Ignored backup files do not count as policy.
+Reinstallation refreshes the repo-owned fixture. The inspector reads the selected
+`logrotate.d` directory using logrotate defaults; it does not validate separate
+settings in the host's main `logrotate.conf`. Strict checks require the matching
+btmp size policy. Component installs must use matching checker skip flags.
 
 ### Install only btmp rotation
 

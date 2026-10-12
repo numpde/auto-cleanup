@@ -403,6 +403,13 @@ if [ "$SKIP_APT_PERIODIC" -eq 0 ]; then
         --candidate-policy "$REPO_DIR/fixtures/apt/10periodic-cleanup")
 fi
 
+BTMP_ACTION=skip
+if [ "$SKIP_BTMP_LOGROTATE" -eq 0 ]; then
+    require_file "$REPO_DIR/lib/btmp-policy.py"
+    BTMP_ACTION=$(python3 "$REPO_DIR/lib/btmp-policy.py" \
+        --directory "$LOGROTATE_DIR" --reference-policy "$REPO_DIR/fixtures/logrotate/btmp" --plan)
+fi
+
 prevalidate_docker_config
 
 assert_install_destination "$BIN_DIR/vps-docker-clean"
@@ -450,7 +457,7 @@ if [ "$SKIP_JOURNALD" -eq 0 ]; then
         0644
 fi
 if [ "$SKIP_BTMP_LOGROTATE" -eq 0 ]; then
-    if ! has_existing_btmp_policy "$LOGROTATE_DIR"; then
+    if [ "$BTMP_ACTION" = install ]; then
         install_file \
             "$REPO_DIR/fixtures/logrotate/btmp" \
             "$LOGROTATE_DIR/auto-cleanup-btmp" \

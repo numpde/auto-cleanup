@@ -298,10 +298,12 @@ if [ "$SKIP_BTMP_LOGROTATE" -eq 0 ]; then
         fi
     elif [ -e "$btmp_logrotate" ] || [ -L "$btmp_logrotate" ]; then
         check_file "$btmp_logrotate"
-    elif has_existing_btmp_policy "$(target "$ETC_DIR/logrotate.d")"; then
-        echo "ok      existing size-based btmp logrotate stanza found"
+    fi
+    if python3 "$REPO_DIR/lib/btmp-policy.py" --directory "$(target "$ETC_DIR/logrotate.d")" \
+        --reference-policy "$REPO_DIR/fixtures/logrotate/btmp"; then
+        echo "ok      effective btmp size policy"
     else
-        echo "missing btmp logrotate stanza"
+        echo "bad     effective btmp size policy"
         FAILED=1
     fi
 fi

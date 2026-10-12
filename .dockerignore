@@ -81,3 +81,5 @@ tests/lib/**
 !tests/38_policy_integrity.sh
 !lib/apt-cleanup-policy.py
 !tests/39_native_apt.sh
+!lib/btmp-policy.py
+!tests/41_native_btmp.sh

@@ -21,6 +21,7 @@ for script in \
     "$REPO_DIR/tests/30_functionality.sh" \
     "$REPO_DIR/tests/34_daemon_json.sh" \
     "$REPO_DIR/tests/35_profiles.sh" \
+    "$REPO_DIR/tests/41_native_btmp.sh" \
     "$REPO_DIR/tests/39_native_apt.sh" \
     "$REPO_DIR/tests/38_policy_integrity.sh" \
     "$REPO_DIR/tests/37_image_retention.sh" \
@@ -37,7 +38,7 @@ done
 
 bash -n "$REPO_DIR/scripts/test-container.sh"
 
-python3 - "$REPO_DIR/lib/merge-docker-daemon.py" "$REPO_DIR/lib/apt-cleanup-policy.py" "$REPO_DIR/fixtures/bin/vps-docker-clean" "$REPO_DIR/tests/image_retention.py" "$REPO_DIR/tests/fixtures/fake-retention-docker.py" <<'PY'
+python3 - "$REPO_DIR/lib/merge-docker-daemon.py" "$REPO_DIR/lib/apt-cleanup-policy.py" "$REPO_DIR/lib/btmp-policy.py" "$REPO_DIR/fixtures/bin/vps-docker-clean" "$REPO_DIR/tests/image_retention.py" "$REPO_DIR/tests/fixtures/fake-retention-docker.py" <<'PY'
 import pathlib
 import sys
 

@@ -118,7 +118,7 @@ fi
 grep -q "python3 is required" "$MERGE_ROOT/no-python.err"
 
 mkdir -p "$FAKE_ROOT/dockerd-bin"
-for cmd in awk dirname grep python3 cat sed cmp mktemp rm apt-config; do
+for cmd in awk dirname grep python3 cat sed cmp mktemp rm apt-config logrotate; do
     if command -v "$cmd" >/dev/null 2>&1; then
         ln -s "$(command -v "$cmd")" "$FAKE_ROOT/dockerd-bin/$cmd"
     fi
@@ -700,9 +700,11 @@ cat > "$ROOT/etc/logrotate.d/unrelated-size-cap" <<'EOF'
 }
 EOF
 rm -f "$ROOT/etc/logrotate.d/auto-cleanup-btmp"
-"$REPO_DIR/scripts/install.sh" --root "$ROOT" --skip-docker-config >/dev/null
-test -e "$ROOT/etc/logrotate.d/auto-cleanup-btmp"
-"$REPO_DIR/scripts/check.sh" --root "$ROOT" --skip-docker-config --strict >/dev/null
+if "$REPO_DIR/scripts/install.sh" --root "$ROOT" --skip-docker-config >"$MERGE_ROOT/btmp-conflict.out" 2>&1; then
+    echo 'uncapped existing btmp stanza accepted' >&2; exit 1
+fi
+grep -q 'update the existing stanza' "$MERGE_ROOT/btmp-conflict.out"
+test ! -e "$ROOT/etc/logrotate.d/auto-cleanup-btmp"
 cat > "$ROOT/etc/logrotate.d/distro-btmp" <<'EOF'
 /var/log/btmp {
     monthly
@@ -732,9 +734,11 @@ cat > "$BTMP_SPLIT_STANZA_ROOT/etc/logrotate.d/distro-btmp" <<'EOF'
     maxsize 50M
 }
 EOF
-"$REPO_DIR/scripts/install.sh" --root "$BTMP_SPLIT_STANZA_ROOT" --skip-docker-config >/dev/null
-test -e "$BTMP_SPLIT_STANZA_ROOT/etc/logrotate.d/auto-cleanup-btmp"
-"$REPO_DIR/scripts/check.sh" --root "$BTMP_SPLIT_STANZA_ROOT" --skip-docker-config --strict >/dev/null
+if "$REPO_DIR/scripts/install.sh" --root "$BTMP_SPLIT_STANZA_ROOT" --skip-docker-config >"$MERGE_ROOT/btmp-split.out" 2>&1; then
+    echo 'unrelated stanza size cap accepted for btmp' >&2; exit 1
+fi
+grep -q 'update the existing stanza' "$MERGE_ROOT/btmp-split.out"
+test ! -e "$BTMP_SPLIT_STANZA_ROOT/usr"
 
 BTMP_COMBINED_ROOT="$MERGE_ROOT/btmp-combined"
 mkdir -p "$BTMP_COMBINED_ROOT/etc/logrotate.d"
