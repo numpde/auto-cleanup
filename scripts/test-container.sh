@@ -98,11 +98,29 @@ build_image() {
   image_tag=$(lane_image_tag "$lane")
   echo "Building test image: $image_tag"
   echo "Base image: $base_image"
-  "$docker_cli" build \
+  iid_file=$(mktemp "${TMPDIR:-/tmp}/auto-cleanup-image.XXXXXX")
+  if "$docker_cli" build \
     --build-arg "BASE_IMAGE=$base_image" \
+    --iidfile "$iid_file" \
     -f "$context_dir/containers/test/Containerfile" \
     -t "$image_tag" \
-    "$context_dir"
+    "$context_dir"; then
+    if built_image_id=$(cat "$iid_file"); then
+      rm -f "$iid_file"
+    else
+      read_status=$?
+      rm -f "$iid_file"
+      return "$read_status"
+    fi
+  else
+    build_status=$?
+    rm -f "$iid_file"
+    return "$build_status"
+  fi
+  if [[ ! "$built_image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "Container build did not return a valid immutable image ID." >&2
+    return 1
+  fi
 }
 
 broad_run_argv() {
@@ -164,17 +182,15 @@ root_run_argv() {
 
 run_broad_lane() {
   lane=$1
-  image_tag=$(lane_image_tag "$lane")
   echo "Running test lane: $lane"
-  mapfile -t docker_args < <(broad_run_argv "$image_tag")
+  mapfile -t docker_args < <(broad_run_argv "$built_image_id")
   "$docker_cli" "${docker_args[@]}"
 }
 
 run_root_lane() {
   lane=debian-12-slim
-  image_tag=$(lane_image_tag "$lane")
   echo "Running root metadata lane: $lane"
-  mapfile -t docker_args < <(root_run_argv "$image_tag")
+  mapfile -t docker_args < <(root_run_argv "$built_image_id")
   "$docker_cli" "${docker_args[@]}"
 }
 
@@ -201,7 +217,6 @@ run_build_context_canary() {
   printf '%s\n' "$canary" > "$tmp_context/tests/id_rsa"
   printf '%s\n' "$canary" > "$tmp_context/fixtures/local.log"
   build_image "$lane" "$tmp_context"
-  image_tag=$(lane_image_tag "$lane")
   "$docker_cli" run \
     --rm \
     --init \
@@ -216,7 +231,7 @@ run_build_context_canary() {
     --memory-swap 128m \
     --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777 \
     --workdir /work \
-    "$image_tag" /bin/sh -eu -c \
+    "$built_image_id" /bin/sh -eu -c \
       'for path in ".git" ".agents" ".codex" "__pycache__" "tmp" ".env" "id_rsa" "local.log" "scripts/.env" "tests/id_rsa" "fixtures/local.log"; do if test -e "/work/$path"; then echo "ignored build-context path reached test image: $path" >&2; exit 1; fi; done'
   cleanup_context
   trap - EXIT
@@ -250,7 +265,6 @@ case "$mode" in
   shell)
     lane=debian-12-slim
     build_image "$lane"
-    image_tag=$(lane_image_tag "$lane")
     interactive_options=()
     if [[ -t 0 && -t 1 ]]; then
       interactive_options=(-it)
@@ -276,6 +290,6 @@ case "$mode" in
       --tmpfs /tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777 \
       --tmpfs /run/auto-cleanup-test:rw,nosuid,nodev,exec,size=256m,mode=1777 \
       --workdir /work \
-      "$image_tag" /bin/sh
+      "$built_image_id" /bin/sh
     ;;
 esac
