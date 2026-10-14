@@ -14,7 +14,8 @@ for test_script in \
     "$SCRIPT_DIR/37_image_retention.sh" \
     "$SCRIPT_DIR/42_target_config.sh" \
     "$SCRIPT_DIR/43_target_lifecycle.sh" \
-    "$SCRIPT_DIR/44_legacy_migration.sh"
+    "$SCRIPT_DIR/44_legacy_migration.sh" \
+    "$SCRIPT_DIR/45_effective_units.sh"
 do
     "$test_script"
 done

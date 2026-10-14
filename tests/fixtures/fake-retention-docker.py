@@ -55,7 +55,7 @@ elif args[:2] in (['container', 'prune'], ['network', 'prune']):
         state['containers'] = {}
         state_path.write_text(json.dumps(state))
     if state.get('change_inventory'):
-        Path(os.environ['IMAGE_PROTECTION_FILE']).write_text('{}')
+        Path(os.environ['RETENTION_PROTECTION_FILE']).write_text('{}')
     if args[0] == 'container' and state.get('remove_tag_on_container_prune'):
         for image in state['images']:
             image['RepoTags'] = [tag for tag in image.get('RepoTags', []) if tag != state['remove_tag_on_container_prune']]

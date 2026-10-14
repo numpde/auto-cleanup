@@ -11,12 +11,7 @@ TARGET_FIELDS = {
     'cache_gib', 'container_until', 'network_until', 'image_until',
     'image_min_free_gib', 'image_protection_mode', 'image_keep_tags', 'image_protection_file',
 }
-RETENTION_ENV = {
-    'container_until': 'CONTAINER_UNTIL', 'network_until': 'NETWORK_UNTIL',
-    'image_until': 'IMAGE_UNTIL', 'image_min_free_gib': 'IMAGE_MIN_FREE_GIB',
-    'image_protection_mode': 'IMAGE_PROTECTION_MODE',
-    'image_protection_file': 'IMAGE_PROTECTION_FILE', 'socket': 'AUTO_CLEANUP_DOCKER_SOCKET',
-}
+SCHEDULES = {'daily': '*-*-* 00:00:00', 'weekly': 'Mon *-*-* 00:00:00'}
 
 
 def unique_object(pairs):
@@ -76,7 +71,7 @@ def validate_target(target):
         integer(target['cache_gib'], 'cache_gib', 1, 8589934591)
     elif target['daemon_service'] is not None or target['cache_gib'] is not None:
         raise ValueError('unmanaged daemon_config requires daemon_service and cache_gib to be null')
-    if target['schedule'] not in ('daily', 'weekly'):
+    if target['schedule'] not in SCHEDULES:
         raise ValueError('schedule must be daily or weekly')
     integer(target['image_min_free_gib'], 'image_min_free_gib', 0, 8589934591)
     for key in ('container_until', 'network_until', 'image_until'):
@@ -110,9 +105,3 @@ def verify_socket_owner(target, uid):
     metadata = os.stat(target['socket'])
     if not stat.S_ISSOCK(metadata.st_mode) or metadata.st_uid != uid:
         raise ValueError(f"Docker socket {target['socket']} must be a Unix socket owned by {target['user']}")
-
-
-def retention_environment(target):
-    values = {env: str(target[key]) for key, env in RETENTION_ENV.items()}
-    values['IMAGE_KEEP_TAGS'] = ' '.join(target['image_keep_tags'])
-    return values

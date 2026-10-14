@@ -11,7 +11,7 @@ removing one daemon does not change another daemon's policy or host settings.
 New timers remain disabled until explicitly enabled. Updates preserve an
 existing active timer after a successful installation.
 
-Requires Python 3.8+, systemd, and standard Linux tools. Host APT/btmp maintenance
+Requires Python 3.8+, systemd (including busctl), and standard Linux tools. Host APT/btmp maintenance
 also requires apt-config, the distro's APT periodic machinery, and logrotate.
 Docker targets require the Docker CLI; managed native cache GC requires the
 **selected daemon** to run Docker Engine 28+ and a local dockerd validator.
@@ -69,6 +69,13 @@ or overlapping configuration/protection paths. Existing enrolled daemons must
 also be reachable during live uniqueness checks. Docker context, host and TLS
 environment variables cannot redirect cleanup. Missing or mismatched targets
 fail without fallback.
+
+The runner requires `--config`; legacy environment-only execution is unsupported.
+Additional cleanup-unit fragments/drop-ins are unsupported. Enrollment checks
+effective systemd account, executable and calendar before enabling a timer.
+Alias-inherited overrides are discovered by the effective manager check
+after files are installed and units reloaded. A failed check leaves the selected
+cleanup timer stopped; reconcile the override before retrying installation.
 
 The installed JSON at `/etc/auto-cleanup/docker/NAME.json` is the runtime and
 lifecycle authority. It is root-owned and read-only to the cleanup account.
@@ -192,7 +199,8 @@ sudo journalctl -u auto-cleanup-docker@agent-mail.service -n 100 --no-pager
 
 Enabling a persistent timer can trigger a missed run soon afterward. A manual
 service start performs cleanup. `docker check` validates installed files and
-on-disk policy; `--live` also inspects daemon identity and timer state. Neither
+on-disk policy; `--live` also inspects daemon identity, effective systemd execution
+and schedule, and timer state. Neither
 runs cleanup or proves on-disk cache settings are active in a running daemon.
 
 Edit a reviewed copy of the saved target and apply it with `--config`, or update

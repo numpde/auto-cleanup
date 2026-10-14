@@ -48,8 +48,9 @@ with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as scratch:
     result = subprocess.run([str(REPO / 'fixtures/bin/vps-docker-clean'), '--config', str(config), '--show-policy'],
                             env=env, text=True, capture_output=True, timeout=15)
     assert result.returncode == 0, result.stderr
-    assert 'IMAGE_UNTIL=168h' in result.stdout and 'IMAGE_PROTECTION_MODE=none' in result.stdout
-    assert 'unix:///run/user/65532/docker.sock' in result.stdout and '/wrong.sock' not in result.stdout
+    reported = json.loads(result.stdout)
+    assert reported['image_until'] == '168h' and reported['image_protection_mode'] == 'none'
+    assert reported['socket'] == '/run/user/65532/docker.sock' and '/wrong.sock' not in result.stdout
     result = subprocess.run([str(REPO / 'fixtures/bin/vps-docker-clean'), '--config', str(config)],
                             text=True, capture_output=True, timeout=15)
     assert result.returncode != 0 and 'root-owned' in result.stderr, result.stderr
@@ -57,4 +58,7 @@ with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as scratch:
     result = subprocess.run([str(REPO / 'fixtures/bin/vps-docker-clean'), '--config', str(config), '--show-policy'],
                             text=True, capture_output=True, timeout=15)
     assert result.returncode != 0 and 'duplicate' in result.stderr, result.stderr
+    result = subprocess.run([str(REPO / 'fixtures/bin/vps-docker-clean')], env=env,
+                            text=True, capture_output=True, timeout=15)
+    assert result.returncode != 0 and '--config' in result.stderr, result.stderr
 print('target configuration ok')

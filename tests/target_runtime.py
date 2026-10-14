@@ -16,6 +16,10 @@ socket_path = Path(settings['socket'])
 if socket_path.exists():
     socket_path.unlink()
 listener.bind(str(socket_path))
+binary = root / 'bin'
+binary.mkdir(exist_ok=True)
+if not (binary / 'docker').exists():
+    (binary / 'docker').symlink_to(REPO / 'tests/fixtures/fake-retention-docker.py')
 current = 'sha256:' + 'a' * 64
 old = 'sha256:' + 'b' * 64
 digest = 'example.test/app@sha256:' + 'd' * 64
@@ -26,9 +30,10 @@ Path(settings['image_protection_file']).chmod(0o600)
 state = dict(images=[dict(Id=current, RepoDigests=[digest], Created='2020-01-01T00:00:00Z'),
                      dict(Id=old, Created='2020-01-01T00:00:00Z')], containers={},
              security_options=['name=rootless'] if kind == 'rootless' else [])
-env = dict(os.environ, DOCKER=str(REPO / 'tests/fixtures/fake-retention-docker.py'),
+env = dict(os.environ, PATH=str(binary) + os.pathsep + os.environ['PATH'],
            RETENTION_STATE=str(root / 'state.json'), FAKE_DOCKER_LOG=str(root / 'log'),
-           EXPECTED_DOCKER_ENDPOINT='unix://' + settings['socket'], IMAGE_PROTECTION_MODE='none')
+           EXPECTED_DOCKER_ENDPOINT='unix://' + settings['socket'], IMAGE_PROTECTION_MODE='none',
+           RETENTION_PROTECTION_FILE=settings['image_protection_file'])
 
 
 def run(changed=None):

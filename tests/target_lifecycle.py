@@ -40,6 +40,12 @@ with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as scratch:
     invalid_root = scratch / 'invalid-restart'
     invoke(invalid_root, 'docker', 'install', '--config', str(configs['agent-mail']), '--restart-docker', good=False)
     assert not invalid_root.exists(), 'invalid restart option changed managed files'
+    inherited_root = scratch / 'inherited-stage'
+    inherited = inherited_root / 'etc/systemd/system/service.d/override.conf'
+    inherited.parent.mkdir(parents=True)
+    inherited.write_text('[Service]\nUser=root\n')
+    invoke(inherited_root, 'docker', 'install', '--config', str(configs['agent-mail']), good=False)
+    assert not (inherited_root / 'etc/auto-cleanup').exists(), 'conflicting drop-in changed target enrollment'
     collision = scratch / 'collision.json'
     collision.write_text(json.dumps(dict(target('collision'), socket='/run/collision.sock',
         daemon_config='/etc/auto-cleanup/docker/agent-mail.json', daemon_service='docker.service', cache_gib=1)))

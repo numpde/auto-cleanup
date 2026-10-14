@@ -16,7 +16,8 @@ import tempfile
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / 'fixtures/bin'))
-from auto_cleanup_config import absolute_path, load_target, read_json, verify_socket_owner
+from auto_cleanup_config import SCHEDULES, absolute_path, load_target, read_json, verify_socket_owner
+from systemd_state import dropin_names, manager_unit_paths, unit_properties
 
 HOST_FILES = {
     'journald': ('fixtures/journald/limits.conf', '/etc/systemd/journald.conf.d/auto-cleanup-limits.conf'),
@@ -51,7 +52,7 @@ def target_files(target):
     return {
         f'{CONFIG}/docker/{name}.json': json.dumps(target, indent=2, sort_keys=True) + '\n',
         f'{UNITS}/auto-cleanup-docker@{name}.service.d/target.conf': f"[Service]\nUser={target['user']}\n",
-        f'{UNITS}/auto-cleanup-docker@{name}.timer.d/schedule.conf': f"[Timer]\nOnCalendar={target['schedule']}\n",
+        f'{UNITS}/auto-cleanup-docker@{name}.timer.d/schedule.conf': f"[Timer]\nOnCalendar={SCHEDULES[target['schedule']]}\n",
     }
 
 
@@ -64,6 +65,7 @@ class Installation:
             raise ValueError('host lifecycle commands require root; use --root for an offline staged tree')
         self.dry = args.dry_run
         self.merge_tools = (REPO / 'lib/merge-docker-daemon.py', REPO / 'fixtures/docker/daemon-log-policy.json')
+        self.unit_paths = None
 
     def path(self, path):
         return self.root / path.lstrip('/') if self.root else Path(path)
@@ -315,8 +317,9 @@ class Installation:
             raise ValueError('supplied target name disagrees with configuration')
         if self.args.restart_docker and target['daemon_config'] is None:
             raise ValueError('--restart-docker requires managed daemon configuration')
-        if not migrating and target['kind'] == 'rootful' and self.path(f'{UNITS}/vps-docker-clean.service').exists():
-            raise ValueError('legacy rootful cleanup exists; use docker migrate to prevent overlapping cleanup')
+        if not migrating and target['kind'] == 'rootful':
+            self.refuse_legacy_cleanup()
+        self.verify_unit_sources(target)
         info = self.inspect_daemon(target) if self.live else None
         self.duplicate_target(target, info)
         files = target_files(target)
@@ -336,6 +339,8 @@ class Installation:
             for destination, text in files.items():
                 self.write(destination, text)
             self.systemctl('daemon-reload')
+            if self.live and not self.dry:
+                self.verify_effective_units(target)
             if self.args.restart_docker:
                 self.restart_with_recovery(target, daemon_change)
             if self.args.enable_timer:
@@ -418,6 +423,7 @@ class Installation:
 
     def check_target(self):
         target = self.target(self.args.name)
+        self.verify_unit_sources(target)
         self.check_files({path: data for path, (data, _) in self.shared_files().items()})
         runtime = self.path(f'{RUNTIME}/docker-clean')
         if runtime.stat().st_mode & 0o111 != 0o111:
@@ -435,7 +441,78 @@ class Installation:
             if not self.live:
                 raise ValueError('--live cannot be used with --root')
             self.inspect_daemon(target)
+            self.verify_effective_units(target)
             print(command(['systemctl', 'show', unit_name(target, 'timer'), '-p', 'ActiveState', '-p', 'UnitFileState']))
+
+    def unit_search_paths(self):
+        if self.unit_paths is None:
+            if self.live:
+                self.unit_paths = manager_unit_paths(command)
+            else:
+                environment = dict(os.environ)
+                environment.pop('SYSTEMD_UNIT_PATH', None)
+                self.unit_paths = command(['systemd-analyze', 'unit-paths'], env=environment).splitlines()
+            if not self.unit_paths:
+                raise ValueError('systemd did not report any unit search directories')
+            for path in self.unit_paths:
+                absolute_path(path, 'systemd unit search directory')
+        return self.unit_paths
+
+    def refuse_legacy_cleanup(self):
+        for base in self.unit_search_paths():
+            for name in ('vps-docker-clean.service', 'vps-docker-clean.timer'):
+                fragment = self.path(f'{base}/{name}')
+                directory = self.path(f'{base}/{name}.d')
+                if (fragment.exists() or fragment.is_symlink() or directory.is_symlink()
+                        or (directory.exists() and (not directory.is_dir() or any(directory.iterdir())))):
+                    raise ValueError('legacy cleanup exists; use docker migrate to prevent overlapping cleanup')
+        if self.live:
+            for name in ('vps-docker-clean.service', 'vps-docker-clean.timer'):
+                result = command(['systemctl', 'show', name, '-p', 'LoadState', '-p', 'ActiveState'])
+                state = dict(line.split('=', 1) for line in result.splitlines())
+                if set(state) != {'LoadState', 'ActiveState'}:
+                    raise ValueError('systemd did not report legacy cleanup state')
+                if state['LoadState'] != 'not-found' or state['ActiveState'] not in ('inactive', 'failed'):
+                    raise ValueError('legacy cleanup remains loaded; migrate or reconcile it before enrollment')
+
+    def verify_unit_sources(self, target):
+        for suffix, file in (('service', 'target.conf'), ('timer', 'schedule.conf')):
+            instance = unit_name(target, suffix)
+            template = f'auto-cleanup-docker@.{suffix}'
+            allowed = f'{UNITS}/{instance}.d/{file}'
+            for base in self.unit_search_paths():
+                for name in (instance, template):
+                    fragment = self.path(f'{base}/{name}')
+                    if (fragment.exists() or fragment.is_symlink()) and f'{base}/{name}' != f'{UNITS}/{template}':
+                        raise ValueError(f'conflicting systemd unit source for {instance}')
+                for name in dropin_names(instance):
+                    directory = self.path(f'{base}/{name}.d')
+                    if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+                        raise ValueError(f'conflicting systemd drop-in directory for {instance}')
+                    if directory.exists() and any(str(path) != str(self.path(allowed)) for path in directory.iterdir()):
+                        raise ValueError(f'unsupported systemd drop-ins for {instance}')
+
+    def verify_effective_units(self, target):
+        for suffix, file in (('service', 'target.conf'), ('timer', 'schedule.conf')):
+            name = unit_name(target, suffix)
+            sources = unit_properties(command, name, 'Unit', ('FragmentPath', 'DropInPaths'))
+            if (sources['FragmentPath'] != f'{UNITS}/auto-cleanup-docker@.{suffix}' or
+                    sources['DropInPaths'] != [f'{UNITS}/{name}.d/{file}']):
+                raise ValueError(f'effective systemd sources differ for {name}')
+        service = unit_properties(command, unit_name(target, 'service'), 'Service', ('User', 'ExecStart'))
+        expected = [f'{RUNTIME}/docker-clean', '--config', f"{CONFIG}/docker/{target['name']}.json"]
+        entries = service['ExecStart']
+        if (service['User'] != target['user'] or not isinstance(entries, list) or len(entries) != 1
+                or not isinstance(entries[0], list) or len(entries[0]) < 3
+                or entries[0][:2] != [expected[0], expected] or entries[0][2] is not False):
+            raise ValueError(f"effective systemd account or executable differs for {target['name']}")
+        timer = unit_properties(command, unit_name(target, 'timer'), 'Timer', ('TimersCalendar', 'TimersMonotonic'))
+        entries = timer['TimersCalendar']
+        if (not isinstance(entries, list) or len(entries) != 1 or not isinstance(entries[0], list)
+                or len(entries[0]) != 3 or entries[0][:2] != ['OnCalendar', SCHEDULES[target['schedule']]]
+                or timer['TimersMonotonic'] != []):
+            raise ValueError(f"effective systemd schedule differs for {target['name']}")
+        print(f"Effective systemd account, executable and schedule match {target['name']}.")
 
     def remove_target(self):
         target = self.target(self.args.name)
@@ -570,12 +647,12 @@ class Installation:
         for destination, text in expected.items():
             if self.legacy_text(destination) != text:
                 raise ValueError(f'custom or unsupported legacy artifact {destination}; reconcile it before migration')
-        for base in command(['systemd-analyze', 'unit-paths']).splitlines():
-            absolute_path(base, 'systemd unit search directory')
+        for base in self.unit_search_paths():
             for unit in ('vps-docker-clean.service', 'vps-docker-clean.timer'):
-                directory = self.path(f'{base}/{unit}.d')
-                if directory.is_symlink() or (directory.exists() and (not directory.is_dir() or any(directory.iterdir()))):
-                    raise ValueError('custom legacy drop-ins must be reconciled before migration')
+                for name in dropin_names(unit):
+                    directory = self.path(f'{base}/{name}.d')
+                    if directory.is_symlink() or (directory.exists() and (not directory.is_dir() or any(directory.iterdir()))):
+                        raise ValueError('custom legacy drop-ins must be reconciled before migration')
                 fragment = self.path(f'{base}/{unit}')
                 if base != UNITS and (fragment.exists() or fragment.is_symlink()):
                     raise ValueError('transient legacy units must be reconciled before migration')
@@ -613,6 +690,8 @@ def main():
         raise ValueError('migration preserves Docker configuration and does not restart the daemon')
     if args.config and args.action not in ('install', 'migrate'):
         raise ValueError('--config is only accepted for installation or migration; checks and removal use saved settings')
+    if args.live and (args.action != 'check' or args.root):
+        raise ValueError('--live requires a check of a live host, without --root')
     if args.scope == 'host' and (args.name or args.enable_timer or args.restart_docker or args.live):
         raise ValueError('host maintenance does not accept target names or Docker options')
     installation = Installation(args)

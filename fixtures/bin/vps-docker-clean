@@ -11,25 +11,6 @@ import subprocess
 import sys
 
 
-def configured_target(arguments):
-    if not arguments or arguments[0] != '--config':
-        return None, arguments
-    if len(arguments) not in (2, 3) or (len(arguments) == 3 and arguments[2] != '--show-policy'):
-        raise ValueError('Usage: vps-docker-clean --config FILE [--show-policy]')
-    from auto_cleanup_config import load_target, retention_environment, verify_socket_owner
-    import pwd
-
-    path = Path(arguments[1])
-    target = load_target(path, trusted=arguments[2:] != ['--show-policy'])
-    if arguments[2:] != ['--show-policy']:
-        if pwd.getpwnam(target['user']).pw_uid != os.geteuid():
-            raise ValueError(f"cleanup for {target['name']} must run as {target['user']}")
-        verify_socket_owner(target, os.geteuid())
-    os.environ.update(retention_environment(target))
-    for key in ('BUILD_CACHE_UNTIL', 'BUILD_CACHE_RESERVED', 'ALLOW_BUILDX_PRUNE'):
-        os.environ.pop(key, None)
-    return target, arguments[2:]
-
 UTC = dt.timezone.utc
 IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}")
 DIGEST = re.compile(r"[^\s@]+@sha256:[0-9a-f]{64}")
@@ -61,8 +42,8 @@ def unique_object(pairs):
     return result
 
 
-def docker(*args, capture=True):
-    command = [os.environ.get("DOCKER", "docker"), "--host", docker_endpoint(), *args]
+def docker(target, *args, capture=True):
+    command = ["docker", "--host", "unix://" + target["socket"], *args]
     result = subprocess.run(command, text=True, stdout=subprocess.PIPE if capture else None,
                             timeout=120, check=False)
     if result.returncode:
@@ -70,15 +51,8 @@ def docker(*args, capture=True):
     return result.stdout
 
 
-def docker_endpoint():
-    socket = os.environ.get("AUTO_CLEANUP_DOCKER_SOCKET", "/var/run/docker.sock")
-    if not socket.startswith("/") or "\x00" in socket or any(part in (".", "..") for part in socket.split("/")) or socket.endswith("/"):
-        raise ValueError("AUTO_CLEANUP_DOCKER_SOCKET must name an absolute local socket path")
-    return "unix://" + socket
-
-
-def inspect(kind, reference):
-    rows = json.loads(docker(kind, "inspect", reference))
+def inspect(target, kind, reference):
+    rows = json.loads(docker(target, kind, "inspect", reference))
     if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
         raise ValueError(f"cannot resolve one {kind} object for {reference}")
     return rows[0]
@@ -90,10 +64,10 @@ def image_id(value):
     return value
 
 
-def container_images():
+def container_images(target):
     protected = set()
-    for container in docker("container", "ls", "-aq", "--no-trunc").splitlines():
-        reference = image_id(inspect("container", container)["Image"])
+    for container in docker(target, "container", "ls", "-aq", "--no-trunc").splitlines():
+        reference = image_id(inspect(target, "container", container)["Image"])
         protected.add(reference)
     return protected
 
@@ -116,7 +90,7 @@ def read_inventory(path):
     return raw
 
 
-def load_protection(path, daemon_id):
+def load_protection(target, path, daemon_id):
     raw = read_inventory(path)
     inventory = json.loads(raw, object_pairs_hook=unique_object)
     if set(inventory) != {"version", "daemon_id", "expires_at", "deployments", "recovery"}:
@@ -147,7 +121,7 @@ def load_protection(path, daemon_id):
     for reference in references:
         if not isinstance(reference, str) or not DIGEST.fullmatch(reference):
             raise ValueError(f"protection requires an immutable repository digest: {reference!r}")
-        row = inspect("image", reference)
+        row = inspect(target, "image", reference)
         if reference not in (row.get("RepoDigests") or []):
             raise ValueError(f"protected digest {reference} does not resolve consistently")
         protected.add(image_id(row["Id"]))
@@ -165,28 +139,15 @@ def assert_inventory_current(path, raw, expiry):
 
 
 class ImageProtection:
-    def __init__(self):
-        self.mode = os.environ.get("IMAGE_PROTECTION_MODE", "inventory")
-        if self.mode not in ("none", "tags", "inventory"):
-            raise ValueError(f"IMAGE_PROTECTION_MODE must be none, tags or inventory; received {self.mode!r}")
-        self.path = Path(os.environ.get("IMAGE_PROTECTION_FILE", "/etc/default/vps-docker-clean.images.json"))
-        if not self.path.is_absolute():
-            raise ValueError("IMAGE_PROTECTION_FILE must be an absolute path")
-        self.tags = os.environ.get("IMAGE_KEEP_TAGS", "").split()
-        if self.mode != "tags" and self.tags:
-            raise ValueError(f"IMAGE_KEEP_TAGS requires IMAGE_PROTECTION_MODE=tags; remove it for mode {self.mode!r}")
-        if self.mode == "tags" and not self.tags:
-            raise ValueError("IMAGE_PROTECTION_MODE=tags requires IMAGE_KEEP_TAGS with explicit local repository:tag names")
-        for reference in self.tags:
-            repository, separator, tag = reference.rpartition(":")
-            if (not separator or not repository or "@" in repository
-                    or not tag or "/" in tag
-                    or IMAGE_ID.fullmatch(reference)):
-                raise ValueError(f"IMAGE_KEEP_TAGS requires explicit repository:tag names, not digests or image IDs; received {reference!r}")
+    def __init__(self, target):
+        self.target = target
+        self.mode = target['image_protection_mode']
+        self.path = Path(target['image_protection_file'])
+        self.tags = target['image_keep_tags']
 
     def load(self, daemon_id):
         if self.mode == "inventory":
-            self.raw, self.expiry, self.inventory_ids = load_protection(self.path, daemon_id)
+            self.raw, self.expiry, self.inventory_ids = load_protection(self.target, self.path, daemon_id)
         return self.refresh()
 
     def refresh(self):
@@ -196,7 +157,7 @@ class ImageProtection:
         protected = set()
         for reference in self.tags:
             try:
-                row = inspect("image", reference)
+                row = inspect(self.target, "image", reference)
             except RuntimeError as error:
                 raise ValueError(f"Cannot protect selected local tag {reference!r}: {error}") from error
             tags = row.get("RepoTags")
@@ -208,24 +169,24 @@ class ImageProtection:
         return protected
 
 
-def retain_images(protection, container_ids, root, minimum_free, cutoff):
+def retain_images(target, protection, container_ids, root, minimum_free, cutoff):
     candidates = []
-    for reference in set(docker("image", "ls", "-aq", "--no-trunc").splitlines()):
+    for reference in set(docker(target, "image", "ls", "-aq", "--no-trunc").splitlines()):
         reference = image_id(reference)
-        row = inspect("image", reference)
+        row = inspect(target, "image", reference)
         if image_id(row["Id"]) != reference:
             raise ValueError(f"image {reference} does not resolve consistently")
         candidates.append((timestamp(row["Created"]), reference))
     failures = False
     for created, reference in sorted(candidates):
-        container_ids.update(container_images())
+        container_ids.update(container_images(target))
         protected = protection.refresh()
         if reference in protected or reference in container_ids:
             print(f"Retain protected image {reference}", flush=True)
             continue
         if created > cutoff and available_bytes(root) >= minimum_free:
             continue
-        container_ids.update(container_images())
+        container_ids.update(container_images(target))
         protected = protection.refresh()
         if reference in protected or reference in container_ids:
             print(f"Retain protected image {reference}", flush=True)
@@ -233,7 +194,7 @@ def retain_images(protection, container_ids, root, minimum_free, cutoff):
         print(f"Remove unprotected image {reference} (created {created.isoformat()})", flush=True)
         try:
             # No parent pruning: an untagged parent can itself be protected.
-            docker("image", "rm", "--no-prune", reference, capture=False)
+            docker(target, "image", "rm", "--no-prune", reference, capture=False)
         except RuntimeError as error:
             print(error, file=sys.stderr)
             failures = True
@@ -245,49 +206,46 @@ def retain_images(protection, container_ids, root, minimum_free, cutoff):
 
 
 def main():
-    target, arguments = configured_target(sys.argv[1:])
-    endpoint = docker_endpoint()
-    obsolete = {"BUILD_CACHE_UNTIL", "BUILD_CACHE_RESERVED", "ALLOW_BUILDX_PRUNE"} & os.environ.keys()
-    if obsolete:
-        raise ValueError("Cannot run cleanup with obsolete cache overrides; remove BUILD_CACHE_UNTIL, BUILD_CACHE_RESERVED and ALLOW_BUILDX_PRUNE. Cache is now managed by Docker GC; set its budget with install.sh --cache-gib.")
-    ages = {}
-    for key in ("CONTAINER_UNTIL", "NETWORK_UNTIL", "IMAGE_UNTIL"):
-        value = os.environ.get(key, "")
-        if not re.fullmatch(r"[1-9][0-9]*h", value):
-            raise ValueError(f"{key} must be positive whole hours (for example 24h); received {value!r}")
-        ages[key] = value
-    cutoff = dt.datetime.now(UTC) - dt.timedelta(hours=int(ages["IMAGE_UNTIL"][:-1]))
-    free_gib = os.environ.get("IMAGE_MIN_FREE_GIB", "0")
-    if not re.fullmatch(r"0|[1-9][0-9]*", free_gib):
-        raise ValueError("IMAGE_MIN_FREE_GIB must be whole GiB without leading zeros; 0 disables space pressure")
-    protection = ImageProtection()
-    if arguments == ["--show-policy"]:
-        for key, value in ages.items():
-            print(f"{key}={value}")
-        print(f"IMAGE_MIN_FREE_GIB={free_gib}\nIMAGE_PROTECTION_MODE={protection.mode}")
-        if protection.mode == "tags":
-            print(f"IMAGE_KEEP_TAGS={' '.join(protection.tags)}")
-        print(f"IMAGE_PROTECTION_FILE={protection.path}")
-        print(f"Container selector: auto-cleanup.disposable=true\nDocker endpoint: {endpoint}")
+    import argparse
+    import pwd
+    from auto_cleanup_config import load_target, verify_socket_owner
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--config', required=True)
+    parser.add_argument('--show-policy', action='store_true')
+    arguments = parser.parse_args()
+    target = load_target(arguments.config, trusted=not arguments.show_policy)
+    if arguments.show_policy:
+        print(json.dumps(target, indent=2, sort_keys=True))
         return 0
-    if arguments:
-        raise ValueError("Usage: vps-docker-clean [--config FILE] [--show-policy]")
+    if pwd.getpwnam(target['user']).pw_uid != os.geteuid():
+        raise ValueError(f"cleanup for {target['name']} must run as {target['user']}")
+    verify_socket_owner(target, os.geteuid())
+    return run_cleanup(target)
+
+
+def run_cleanup(target):
+    """Apply a validated target; the CLI owns account and configuration admission."""
+    endpoint = 'unix://' + target['socket']
+    cutoff = dt.datetime.now(UTC) - dt.timedelta(hours=int(target['image_until'][:-1]))
+    protection = ImageProtection(target)
     for key in ("DOCKER_CONTEXT", "DOCKER_HOST", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"):
         os.environ.pop(key, None)
     try:
-        info = json.loads(docker("info", "--format", "{{json .}}"))
+        info = json.loads(docker(target, "info", "--format", "{{json .}}"))
     except RuntimeError as error:
         raise RuntimeError(f"Docker daemon at {endpoint} is not reachable: {error}") from error
-    if not isinstance(info["ID"], str) or not info["ID"]:
+    if not isinstance(info, dict) or not isinstance(info.get("ID"), str) or not info["ID"]:
         raise ValueError("Docker did not report its daemon identity")
-    if target is not None:
-        security = info.get('SecurityOptions')
-        if not isinstance(security, list) or any(not isinstance(option, str) for option in security):
-            raise ValueError('Docker did not report valid SecurityOptions for the configured target')
-        rootless = 'name=rootless' in security
-        if rootless != (target['kind'] == 'rootless'):
-            raise ValueError(f"Docker at {endpoint} does not match configured kind {target['kind']}")
-    root = info["DockerRootDir"]
+    security = info.get('SecurityOptions')
+    if not isinstance(security, list) or any(not isinstance(option, str) for option in security):
+        raise ValueError('Docker did not report valid SecurityOptions for the configured target')
+    rootless = 'name=rootless' in security
+    if rootless != (target['kind'] == 'rootless'):
+        raise ValueError(f"Docker at {endpoint} does not match configured kind {target['kind']}")
+    root = info.get('DockerRootDir')
+    if not isinstance(root, str) or not root.startswith('/'):
+        raise ValueError('Docker did not report an absolute storage directory')
     available_bytes(root)
     # Publishers must hold this same stable lock through publication and deployment.
     descriptor = os.open(str(protection.path) + ".lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
@@ -298,17 +256,17 @@ def main():
         except BlockingIOError as error:
             raise RuntimeError(f"Protection lock {protection.path}.lock is busy; deployment or another cleanup is in progress") from error
         protection.load(info["ID"])
-        container_ids = container_images()
+        container_ids = container_images(target)
         failures = False
-        for args in (("container", "prune", "-f", "--filter", f"until={ages['CONTAINER_UNTIL']}", "--filter", "label=auto-cleanup.disposable=true"),
-                     ("network", "prune", "-f", "--filter", f"until={ages['NETWORK_UNTIL']}")):
+        for args in (("container", "prune", "-f", "--filter", f"until={target['container_until']}", "--filter", "label=auto-cleanup.disposable=true"),
+                     ("network", "prune", "-f", "--filter", f"until={target['network_until']}")):
             try:
                 protection.refresh()
-                docker(*args, capture=False)
+                docker(target, *args, capture=False)
             except RuntimeError as error:
                 print(error, file=sys.stderr)
                 failures = True
-        failures |= retain_images(protection, container_ids, root, int(free_gib) * 1024**3, cutoff)
+        failures |= retain_images(target, protection, container_ids, root, target['image_min_free_gib'] * 1024**3, cutoff)
         if failures:
             raise RuntimeError("One or more Docker cleanup commands failed.")
     return 0

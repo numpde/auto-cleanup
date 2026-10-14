@@ -84,8 +84,12 @@ fixtures/legacy/**
 !fixtures/legacy/vps-docker-clean.service
 !fixtures/legacy/vps-docker-clean.timer
 !scripts/legacy_policy.py
+!scripts/systemd_state.py
 !tests/44_legacy_migration.sh
 !tests/legacy_migration.py
+!tests/fixtures/run-retention-case.py
+!tests/45_effective_units.sh
+!tests/effective_units.py
 !examples/
 examples/**
 !examples/host.json
