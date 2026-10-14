@@ -125,7 +125,7 @@ reject_text "$REPO_DIR/.dockerignore" "!scripts/**"
 reject_text "$REPO_DIR/.dockerignore" "!tests/**"
 require_text "$REPO_DIR/.dockerignore" "!fixtures/bin/vps-docker-clean"
 require_text "$REPO_DIR/.dockerignore" "!scripts/install.sh"
-require_text "$REPO_DIR/.dockerignore" "!tests/30_functionality.sh"
+require_text "$REPO_DIR/.dockerignore" "!tests/43_target_lifecycle.sh"
 require_text "$REPO_DIR/.dockerignore" "!notes/001_containerized_test_strategy.txt"
 for absent in .git .agents .codex; do
     if [ -e "$REPO_DIR/$absent" ]; then

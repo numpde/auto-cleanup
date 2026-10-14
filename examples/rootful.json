@@ -1,0 +1,17 @@
+{
+  "name": "rootful",
+  "kind": "rootful",
+  "user": "root",
+  "socket": "/var/run/docker.sock",
+  "daemon_config": "/etc/docker/daemon.json",
+  "daemon_service": "docker.service",
+  "cache_gib": 1,
+  "schedule": "daily",
+  "container_until": "24h",
+  "network_until": "24h",
+  "image_until": "168h",
+  "image_min_free_gib": 0,
+  "image_protection_mode": "none",
+  "image_keep_tags": [],
+  "image_protection_file": "/var/lib/auto-cleanup/rootful/images.json"
+}

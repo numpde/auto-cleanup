@@ -518,7 +518,73 @@ class Installation:
         self.systemctl('stop', 'vps-docker-clean.service')
 
     def migrate_target(self):
-        raise ValueError('legacy migration is not yet available; keep the existing installation unchanged')
+        if not self.args.config:
+            raise ValueError('docker migrate requires a reviewed --config FILE')
+        target = load_target(self.args.config)
+        if target['kind'] != 'rootful' or target['user'] != 'root' or Path(target['socket']).resolve() != Path('/var/run/docker.sock').resolve():
+            raise ValueError('legacy migration must retain the root-owned local Docker daemon')
+        if target['daemon_config'] is not None:
+            raise ValueError('migration must leave daemon_config, daemon_service and cache_gib null; enroll daemon management separately')
+        from legacy_policy import effective_policy
+        managed = self.legacy_text('/etc/default/vps-docker-clean.policy')
+        override_path = self.path('/etc/default/vps-docker-clean')
+        overrides = self.legacy_text('/etc/default/vps-docker-clean') if override_path.exists() or override_path.is_symlink() else ''
+        policy = effective_policy(managed, overrides)
+        for key, value in policy.items():
+            if target[key] != value:
+                raise ValueError(f'reviewed target changes legacy {key}; migrate unchanged, then update the enrolled target')
+        self.validate_legacy_artifacts(policy['schedule'])
+        obsolete = ('/usr/local/sbin/vps-docker-clean', f'{UNITS}/vps-docker-clean.service',
+                    f'{UNITS}/vps-docker-clean.timer', '/etc/default/vps-docker-clean.policy')
+        self.validate_destinations(obsolete)
+        # Handoff activation happens after obsolete units have been removed.
+        enable = self.args.enable_timer
+        self.args.enable_timer = False
+        try:
+            self.install_target(migrating=True)
+            for destination in obsolete:
+                self.remove(destination)
+            self.systemctl('daemon-reload')
+            if enable:
+                self.systemctl('enable', '--now', unit_name(target, 'timer'))
+        finally:
+            self.args.enable_timer = enable
+        print('Migrated legacy cleanup. Preserved host policies, daemon configuration, operator override history, inventory and stable lock.')
+
+    def legacy_text(self, destination):
+        path = self.path(destination)
+        self.safe(path)
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, newline='') as stream:
+            metadata = os.fstat(stream.fileno())
+            if not stat.S_ISREG(metadata.st_mode) or (self.live and (metadata.st_uid != 0 or metadata.st_mode & 0o022)):
+                raise ValueError(f'legacy file {destination} is not a protected regular file')
+            return stream.read()
+
+    def validate_legacy_artifacts(self, schedule):
+        expected = {
+            '/usr/local/sbin/vps-docker-clean': (REPO / 'fixtures/legacy/vps-docker-clean').read_text(),
+            f'{UNITS}/vps-docker-clean.service': (REPO / 'fixtures/legacy/vps-docker-clean.service').read_text().replace('@SBIN_DIR@', '/usr/local/sbin').replace('@ETC_DIR@', '/etc'),
+            f'{UNITS}/vps-docker-clean.timer': (REPO / 'fixtures/legacy/vps-docker-clean.timer').read_text().replace('@SCHEDULE@', schedule),
+        }
+        for destination, text in expected.items():
+            if self.legacy_text(destination) != text:
+                raise ValueError(f'custom or unsupported legacy artifact {destination}; reconcile it before migration')
+        for base in command(['systemd-analyze', 'unit-paths']).splitlines():
+            absolute_path(base, 'systemd unit search directory')
+            for unit in ('vps-docker-clean.service', 'vps-docker-clean.timer'):
+                directory = self.path(f'{base}/{unit}.d')
+                if directory.is_symlink() or (directory.exists() and (not directory.is_dir() or any(directory.iterdir()))):
+                    raise ValueError('custom legacy drop-ins must be reconciled before migration')
+                fragment = self.path(f'{base}/{unit}')
+                if base != UNITS and (fragment.exists() or fragment.is_symlink()):
+                    raise ValueError('transient legacy units must be reconciled before migration')
+        if self.live:
+            for unit in ('vps-docker-clean.service', 'vps-docker-clean.timer'):
+                fragment = command(['systemctl', 'show', unit, '-p', 'FragmentPath', '--value'])
+                dropins = command(['systemctl', 'show', unit, '-p', 'DropInPaths', '--value'])
+                if fragment != f'{UNITS}/{unit}' or dropins:
+                    raise ValueError('effective legacy systemd units differ from the supported installation')
 
 
 def parser():
@@ -541,8 +607,10 @@ def main():
         raise ValueError('host supports install, check and remove')
     if args.scope == 'docker' and args.action in ('check', 'remove') and not args.name:
         raise ValueError(f'docker {args.action} requires a target name')
-    if args.action != 'install' and (args.enable_timer or args.restart_docker):
+    if args.action not in ('install', 'migrate') and (args.enable_timer or args.restart_docker):
         raise ValueError('timer activation and daemon restart are install options')
+    if args.action == 'migrate' and args.restart_docker:
+        raise ValueError('migration preserves Docker configuration and does not restart the daemon')
     if args.config and args.action not in ('install', 'migrate'):
         raise ValueError('--config is only accepted for installation or migration; checks and removal use saved settings')
     if args.scope == 'host' and (args.name or args.enable_timer or args.restart_docker or args.live):

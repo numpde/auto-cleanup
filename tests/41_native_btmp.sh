@@ -17,15 +17,15 @@ for kind in backup uncapped duplicate wrong-size; do
         wrong-size) sed 's/maxsize 50M/maxsize 100M/' "$REPO_DIR/fixtures/logrotate/btmp" > "$stage/etc/logrotate.d/btmp" ;;
     esac
     if [ "$kind" = backup ]; then
-        "$REPO_DIR/scripts/install.sh" --root "$stage" >/dev/null
+        "$REPO_DIR/scripts/install.sh" host --root "$stage" >/dev/null
         test -e "$stage/etc/logrotate.d/auto-cleanup-btmp"
-        "$REPO_DIR/scripts/check.sh" --root "$stage" --strict >/dev/null
+        "$REPO_DIR/scripts/check.sh" host --root "$stage" >/dev/null
         rm "$stage/etc/logrotate.d/auto-cleanup-btmp"
-        if "$REPO_DIR/scripts/check.sh" --root "$stage" --strict >"$scratch/out" 2>&1; then
+        if "$REPO_DIR/scripts/check.sh" host --root "$stage" >"$scratch/out" 2>&1; then
             echo 'ignored btmp backup accepted by checker' >&2; exit 1
         fi
     else
-        if "$REPO_DIR/scripts/install.sh" --root "$stage" >"$scratch/out" 2>&1; then
+        if "$REPO_DIR/scripts/install.sh" host --root "$stage" >"$scratch/out" 2>&1; then
             echo "conflicting btmp configuration accepted: $kind" >&2; exit 1
         fi
         grep -q 'Cannot inspect btmp' "$scratch/out"
@@ -34,12 +34,12 @@ for kind in backup uncapped duplicate wrong-size; do
     fi
 done
 stage=$scratch/reinstall
-"$REPO_DIR/scripts/install.sh" --root "$stage" >/dev/null
+"$REPO_DIR/scripts/install.sh" host --root "$stage" >/dev/null
 sed -i '/compress/d' "$stage/etc/logrotate.d/auto-cleanup-btmp"
-"$REPO_DIR/scripts/install.sh" --root "$stage" >/dev/null
-"$REPO_DIR/scripts/check.sh" --root "$stage" --strict >/dev/null
+"$REPO_DIR/scripts/install.sh" host --root "$stage" >/dev/null
+"$REPO_DIR/scripts/check.sh" host --root "$stage" >/dev/null
 stage=$scratch/group-umask
-(umask 002; "$REPO_DIR/scripts/install.sh" --root "$stage" >/dev/null)
-"$REPO_DIR/scripts/check.sh" --root "$stage" --strict >/dev/null
-(umask 002; "$REPO_DIR/scripts/install.sh" --root "$stage" >/dev/null)
+(umask 002; "$REPO_DIR/scripts/install.sh" host --root "$stage" >/dev/null)
+"$REPO_DIR/scripts/check.sh" host --root "$stage" >/dev/null
+(umask 002; "$REPO_DIR/scripts/install.sh" host --root "$stage" >/dev/null)
 echo 'native btmp policy inspection ok'

@@ -9,14 +9,14 @@ stage=$scratch/ignored
 mkdir -p "$stage/etc/apt/apt.conf.d/nested"
 printf '%s\n' 'APT::Periodic::AutocleanInterval "7";' > "$stage/etc/apt/apt.conf.d/10periodic.bak"
 printf '%s\n' 'APT::Periodic::AutocleanInterval "7";' > "$stage/etc/apt/apt.conf.d/nested/10periodic"
-"$REPO_DIR/scripts/install.sh" --root "$stage" >/dev/null
+"$REPO_DIR/scripts/install.sh" host --root "$stage" >/dev/null
 test -e "$stage/etc/apt/apt.conf.d/90auto-cleanup-periodic"
-"$REPO_DIR/scripts/check.sh" --root "$stage" --strict >/dev/null
+"$REPO_DIR/scripts/check.sh" host --root "$stage" >/dev/null
 rm "$stage/etc/apt/apt.conf.d/90auto-cleanup-periodic"
-if "$REPO_DIR/scripts/check.sh" --root "$stage" --strict >"$scratch/out" 2>&1; then
+if "$REPO_DIR/scripts/check.sh" host --root "$stage" >"$scratch/out" 2>&1; then
     echo 'ignored APT configuration accepted as active cleanup' >&2; exit 1
 fi
-grep -q 'bad.*effective APT cleanup' "$scratch/out"
+grep -q 'No effective APT cleanup' "$scratch/out"
 for kind in late-override main-disable leading-zero-disable; do
     stage=$scratch/$kind
     mkdir -p "$stage/etc/apt/apt.conf.d"
@@ -29,7 +29,7 @@ for kind in late-override main-disable leading-zero-disable; do
         main-disable)
             printf '%s\n' 'APT::Periodic::Enable "0";' > "$stage/etc/apt/apt.conf" ;;
     esac
-    if "$REPO_DIR/scripts/install.sh" --root "$stage" >"$scratch/out" 2>&1; then
+    if "$REPO_DIR/scripts/install.sh" host --root "$stage" >"$scratch/out" 2>&1; then
         echo "disabled APT candidate accepted: $kind" >&2; exit 1
     fi
     grep -q 'existing settings disable the candidate' "$scratch/out"
@@ -37,17 +37,17 @@ for kind in late-override main-disable leading-zero-disable; do
     test ! -e "$stage/etc/apt/apt.conf.d/90auto-cleanup-periodic"
 done
 stage=$scratch/reinstall
-"$REPO_DIR/scripts/install.sh" --root "$stage" >/dev/null
+"$REPO_DIR/scripts/install.sh" host --root "$stage" >/dev/null
 printf '%s\n' 'APT::Periodic::AutocleanInterval "1";' >> "$stage/etc/apt/apt.conf.d/90auto-cleanup-periodic"
-"$REPO_DIR/scripts/install.sh" --root "$stage" >/dev/null
-"$REPO_DIR/scripts/check.sh" --root "$stage" --strict >/dev/null
+"$REPO_DIR/scripts/install.sh" host --root "$stage" >/dev/null
+"$REPO_DIR/scripts/check.sh" host --root "$stage" >/dev/null
 for interval in 7d 1h 30m 60s; do
     stage=$scratch/interval-$interval
     mkdir -p "$stage/etc/apt/apt.conf.d"
     printf 'APT::Periodic::AutocleanInterval "%s";\n' "$interval" > "$stage/etc/apt/apt.conf.d/10periodic"
-    "$REPO_DIR/scripts/install.sh" --root "$stage" >/dev/null
+    "$REPO_DIR/scripts/install.sh" host --root "$stage" >/dev/null
     test ! -e "$stage/etc/apt/apt.conf.d/90auto-cleanup-periodic"
-    "$REPO_DIR/scripts/check.sh" --root "$stage" --strict >/dev/null
+    "$REPO_DIR/scripts/check.sh" host --root "$stage" >/dev/null
 done
 python3 - "$REPO_DIR" "$scratch" <<'PY'
 import pathlib

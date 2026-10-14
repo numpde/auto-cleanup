@@ -1,0 +1,5 @@
+{
+  "journald": true,
+  "apt": true,
+  "btmp": true
+}

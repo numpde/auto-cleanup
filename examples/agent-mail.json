@@ -1,0 +1,17 @@
+{
+  "name": "agent-mail",
+  "kind": "rootless",
+  "user": "agent-mail",
+  "socket": "/run/user/1000/docker.sock",
+  "daemon_config": "/home/agent-mail/.config/docker/daemon.json",
+  "daemon_service": "docker.service",
+  "cache_gib": 1,
+  "schedule": "daily",
+  "container_until": "24h",
+  "network_until": "24h",
+  "image_until": "168h",
+  "image_min_free_gib": 0,
+  "image_protection_mode": "none",
+  "image_keep_tags": [],
+  "image_protection_file": "/var/lib/auto-cleanup/agent-mail/images.json"
+}

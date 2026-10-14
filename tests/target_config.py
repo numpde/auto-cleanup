@@ -18,6 +18,8 @@ TARGET = dict(name='agent-mail', kind='rootless', user='test-runner',
               image_min_free_gib=0, image_protection_mode='none', image_keep_tags=[],
               image_protection_file='/var/lib/auto-cleanup/agent-mail/images.json')
 assert validate_target(TARGET) == TARGET
+for example in ('rootful', 'agent-mail'):
+    assert validate_target(json.loads((REPO / f'examples/{example}.json').read_text()))
 for key, value in [('socket', 'tcp://host:2375'), ('name', '../other'), ('user', 'root'),
                    ('kind', 'auto'), ('cache_gib', True), ('cache_gib', 0),
                    ('schedule', 'hourly'), ('daemon_service', 'docker.service;bad'),
