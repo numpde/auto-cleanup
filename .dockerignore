@@ -21,6 +21,7 @@ fixtures/apt/**
 !fixtures/bin/
 fixtures/bin/**
 !fixtures/bin/vps-docker-clean
+!fixtures/bin/auto_cleanup_config.py
 !fixtures/default/
 fixtures/default/**
 !fixtures/default/vps-docker-clean.example
@@ -83,3 +84,5 @@ tests/lib/**
 !tests/39_native_apt.sh
 !lib/btmp-policy.py
 !tests/41_native_btmp.sh
+!tests/42_target_config.sh
+!tests/target_config.py

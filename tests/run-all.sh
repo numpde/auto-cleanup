@@ -16,6 +16,7 @@ for test_script in \
     "$SCRIPT_DIR/39_native_apt.sh" \
     "$SCRIPT_DIR/38_policy_integrity.sh" \
     "$SCRIPT_DIR/37_image_retention.sh" \
+    "$SCRIPT_DIR/42_target_config.sh" \
     "$SCRIPT_DIR/36_install_progress.sh"
 do
     "$test_script"

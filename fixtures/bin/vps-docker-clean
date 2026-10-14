@@ -10,6 +10,25 @@ import stat
 import subprocess
 import sys
 
+
+def configured_target(arguments):
+    if not arguments or arguments[0] != '--config':
+        return None, arguments
+    if len(arguments) not in (2, 3) or (len(arguments) == 3 and arguments[2] != '--show-policy'):
+        raise ValueError('Usage: vps-docker-clean --config FILE [--show-policy]')
+    from auto_cleanup_config import load_target, retention_environment
+    import pwd
+
+    path = Path(arguments[1])
+    target = load_target(path, trusted=arguments[2:] != ['--show-policy'])
+    if arguments[2:] != ['--show-policy']:
+        if pwd.getpwnam(target['user']).pw_uid != os.geteuid():
+            raise ValueError(f"cleanup for {target['name']} must run as {target['user']}")
+    os.environ.update(retention_environment(target))
+    for key in ('BUILD_CACHE_UNTIL', 'BUILD_CACHE_RESERVED', 'ALLOW_BUILDX_PRUNE'):
+        os.environ.pop(key, None)
+    return target, arguments[2:]
+
 UTC = dt.timezone.utc
 IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}")
 DIGEST = re.compile(r"[^\s@]+@sha256:[0-9a-f]{64}")
@@ -225,6 +244,7 @@ def retain_images(protection, container_ids, root, minimum_free, cutoff):
 
 
 def main():
+    target, arguments = configured_target(sys.argv[1:])
     endpoint = docker_endpoint()
     obsolete = {"BUILD_CACHE_UNTIL", "BUILD_CACHE_RESERVED", "ALLOW_BUILDX_PRUNE"} & os.environ.keys()
     if obsolete:
@@ -240,7 +260,7 @@ def main():
     if not re.fullmatch(r"0|[1-9][0-9]*", free_gib):
         raise ValueError("IMAGE_MIN_FREE_GIB must be whole GiB without leading zeros; 0 disables space pressure")
     protection = ImageProtection()
-    if sys.argv[1:] == ["--show-policy"]:
+    if arguments == ["--show-policy"]:
         for key, value in ages.items():
             print(f"{key}={value}")
         print(f"IMAGE_MIN_FREE_GIB={free_gib}\nIMAGE_PROTECTION_MODE={protection.mode}")
@@ -249,8 +269,8 @@ def main():
         print(f"IMAGE_PROTECTION_FILE={protection.path}")
         print(f"Container selector: auto-cleanup.disposable=true\nDocker endpoint: {endpoint}")
         return 0
-    if sys.argv[1:]:
-        raise ValueError("Usage: vps-docker-clean [--show-policy]")
+    if arguments:
+        raise ValueError("Usage: vps-docker-clean [--config FILE] [--show-policy]")
     for key in ("DOCKER_CONTEXT", "DOCKER_HOST", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"):
         os.environ.pop(key, None)
     try:
@@ -259,6 +279,13 @@ def main():
         raise RuntimeError(f"Docker daemon at {endpoint} is not reachable: {error}") from error
     if not isinstance(info["ID"], str) or not info["ID"]:
         raise ValueError("Docker did not report its daemon identity")
+    if target is not None:
+        security = info.get('SecurityOptions')
+        if not isinstance(security, list) or any(not isinstance(option, str) for option in security):
+            raise ValueError('Docker did not report valid SecurityOptions for the configured target')
+        rootless = 'name=rootless' in security
+        if rootless != (target['kind'] == 'rootless'):
+            raise ValueError(f"Docker at {endpoint} does not match configured kind {target['kind']}")
     root = info["DockerRootDir"]
     available_bytes(root)
     # Publishers must hold this same stable lock through publication and deployment.
