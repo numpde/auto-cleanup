@@ -115,6 +115,11 @@ target() {
     printf '%s%s\n' "$ROOT" "$1"
 }
 
+if [ -d "$(target "$ETC_DIR/auto-cleanup")" ]; then
+    echo "Cannot use the legacy uninstaller with enrolled host or Docker targets; use scripts/auto-cleanup." >&2
+    exit 1
+fi
+
 run() {
     if [ "$DRY_RUN" -eq 1 ]; then
         printf 'would run:'

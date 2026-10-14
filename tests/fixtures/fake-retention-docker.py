@@ -15,7 +15,8 @@ with Path(os.environ['FAKE_DOCKER_LOG']).open('a') as stream:
 if args[0] == 'info':
     if state.get('daemon_down'):
         sys.exit(1)
-    print(json.dumps({'ID': 'test-daemon', 'DockerRootDir': str(state_path.parent)}))
+    print(json.dumps({'ID': 'test-daemon', 'DockerRootDir': str(state_path.parent),
+                      'SecurityOptions': state.get('security_options', [])}))
 elif args[:2] == ['image', 'inspect']:
     reference = args[2]
     lookup = state.get('inspect_aliases', {}).get(reference, reference)

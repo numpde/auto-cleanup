@@ -1,0 +1,17 @@
+{
+  "name": "test-rootless",
+  "kind": "rootless",
+  "user": "test-runner",
+  "socket": "/run/auto-cleanup-test/target-rootless/docker.sock",
+  "daemon_config": null,
+  "daemon_service": null,
+  "cache_gib": null,
+  "schedule": "daily",
+  "container_until": "24h",
+  "network_until": "24h",
+  "image_until": "168h",
+  "image_min_free_gib": 0,
+  "image_protection_mode": "inventory",
+  "image_keep_tags": [],
+  "image_protection_file": "/run/auto-cleanup-test/target-rootless/images.json"
+}

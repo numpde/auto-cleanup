@@ -86,3 +86,11 @@ tests/lib/**
 !tests/41_native_btmp.sh
 !tests/42_target_config.sh
 !tests/target_config.py
+!scripts/auto-cleanup
+!fixtures/systemd/auto-cleanup-docker@.service
+!fixtures/systemd/auto-cleanup-docker@.timer
+!tests/43_target_lifecycle.sh
+!tests/target_lifecycle.py
+!tests/target_runtime.py
+!tests/fixtures/target-rootful.json
+!tests/fixtures/target-rootless.json

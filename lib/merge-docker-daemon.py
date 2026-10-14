@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Merge owned logging and optional native GC settings, preserving other daemon keys."""
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -177,6 +178,8 @@ def main():
         help="write the merged daemon JSON to this path without updating daemon-json",
     )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--print-json", action="store_true", help="print the candidate without writing files")
+    parser.add_argument("--expect-output-sha256", help="refuse a merged result that differs from a validated candidate")
     args = parser.parse_args()
 
     validate_raw_absolute_path(args.daemon_json, "daemon")
@@ -221,6 +224,11 @@ def main():
         return 0
 
     output = json.dumps(merged, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    if args.expect_output_sha256 is not None and hashlib.sha256(output.encode()).hexdigest() != args.expect_output_sha256:
+        raise SystemExit('Docker configuration changed after validation; refusing to write a different candidate')
+    if args.print_json:
+        sys.stdout.write(output)
+        return 0
     if args.output_json is not None:
         output_path = pathlib.Path(args.output_json)
         if output_path == daemon_path:

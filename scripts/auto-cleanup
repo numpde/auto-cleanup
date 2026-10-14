@@ -1,0 +1,591 @@
+#!/usr/bin/env python3
+"""Install, inspect and remove host policies or explicitly enrolled Docker targets."""
+import argparse
+import contextlib
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import pwd
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / 'fixtures/bin'))
+from auto_cleanup_config import absolute_path, load_target, read_json, verify_socket_owner
+
+HOST_FILES = {
+    'journald': ('fixtures/journald/limits.conf', '/etc/systemd/journald.conf.d/auto-cleanup-limits.conf'),
+    'btmp': ('fixtures/logrotate/btmp', '/etc/logrotate.d/auto-cleanup-btmp'),
+    'apt': ('fixtures/apt/10periodic-cleanup', '/etc/apt/apt.conf.d/90auto-cleanup-periodic'),
+}
+RUNTIME = '/usr/local/lib/auto-cleanup'
+CONFIG = '/etc/auto-cleanup'
+UNITS = '/etc/systemd/system'
+
+
+def command(argv, env=None):
+    result = subprocess.run([str(arg) for arg in argv], env=env, text=True,
+                            capture_output=True, timeout=120, check=False)
+    if result.returncode:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise RuntimeError(f'{argv[0]} failed (exit {result.returncode}): {detail}')
+    return result.stdout.strip()
+
+
+def unit_name(target, suffix):
+    return f"auto-cleanup-docker@{target['name']}.{suffix}"
+
+
+def paths_overlap(first, second):
+    a, b = Path(first), Path(second)
+    return a == b or a in b.parents or b in a.parents
+
+
+def target_files(target):
+    name = target['name']
+    return {
+        f'{CONFIG}/docker/{name}.json': json.dumps(target, indent=2, sort_keys=True) + '\n',
+        f'{UNITS}/auto-cleanup-docker@{name}.service.d/target.conf': f"[Service]\nUser={target['user']}\n",
+        f'{UNITS}/auto-cleanup-docker@{name}.timer.d/schedule.conf': f"[Timer]\nOnCalendar={target['schedule']}\n",
+    }
+
+
+class Installation:
+    def __init__(self, args):
+        self.args = args
+        self.root = absolute_path(args.root, '--root') if args.root else None
+        self.live = self.root is None
+        if self.live and os.geteuid() != 0 and args.action != 'list':
+            raise ValueError('host lifecycle commands require root; use --root for an offline staged tree')
+        self.dry = args.dry_run
+        self.merge_tools = (REPO / 'lib/merge-docker-daemon.py', REPO / 'fixtures/docker/daemon-log-policy.json')
+
+    def path(self, path):
+        return self.root / path.lstrip('/') if self.root else Path(path)
+
+    def safe(self, path):
+        for parent in reversed(path.parents):
+            if parent.is_symlink() or (parent.exists() and not parent.is_dir()):
+                raise ValueError(f'cannot manage {path}: parent {parent} is not a plain directory')
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise ValueError(f'cannot manage {path}: destination is not a regular file')
+
+    def write(self, destination, data, mode=0o644, owner=None):
+        path = self.path(destination)
+        self.safe(path)
+        print(f'Write {destination}')
+        if self.dry:
+            return
+        self.make_owned_parents(path.parent)
+        descriptor, temporary = tempfile.mkstemp(prefix='.auto-cleanup-', dir=path.parent)
+        try:
+            with os.fdopen(descriptor, 'wb') as stream:
+                stream.write(data.encode() if isinstance(data, str) else data)
+                stream.flush()
+                os.fchmod(stream.fileno(), mode)
+                if self.live:
+                    os.fchown(stream.fileno(), *(owner or (0, 0)))
+                os.fsync(stream.fileno())
+            self.safe(path)
+            os.replace(temporary, path)
+            descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+    def make_owned_parents(self, directory):
+        for parent in reversed([directory, *directory.parents]):
+            if not parent.exists():
+                parent.mkdir(mode=0o755)
+                parent.chmod(0o755)
+                if self.live:
+                    os.chown(parent, 0, 0)
+            if self.live and (parent.stat().st_uid != 0 or parent.stat().st_mode & 0o022):
+                raise ValueError(f'lifecycle directory {parent} must be root-owned without group/other write access')
+
+    def remove(self, destination):
+        path = self.path(destination)
+        self.safe(path)
+        print(f'Remove {destination}')
+        if not self.dry and path.exists():
+            path.unlink()
+
+    def systemctl(self, *args):
+        if not self.live:
+            return
+        print('systemctl ' + ' '.join(args))
+        if not self.dry:
+            command(['systemctl', *args])
+
+    def target_path(self, name):
+        # Validate names before interpolating them into filesystem paths or unit names.
+        import re
+        if not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', name):
+            raise ValueError('target name must be a simple Linux name')
+        return self.path(f'{CONFIG}/docker/{name}.json')
+
+    def target(self, name):
+        target = load_target(self.target_path(name), trusted=self.live)
+        if target['name'] != name:
+            raise ValueError(f'target filename {name} disagrees with its configured name')
+        return target
+
+    def registered(self):
+        directory = self.path(f'{CONFIG}/docker')
+        if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+            raise ValueError('target registry must be a plain directory')
+        if directory.exists():
+            for path in sorted(directory.glob('*.json')):
+                yield self.target(path.stem)
+
+    def account(self, target):
+        return pwd.getpwnam(target['user'])
+
+    def owner_command(self, target, argv):
+        env = dict(os.environ)
+        for key in ('DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_TLS', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH'):
+            env.pop(key, None)
+        if target['kind'] == 'rootless':
+            account = self.account(target)
+            env['XDG_RUNTIME_DIR'] = f'/run/user/{account.pw_uid}'
+            env['DBUS_SESSION_BUS_ADDRESS'] = f"unix:path={env['XDG_RUNTIME_DIR']}/bus"
+            return command(['runuser', '-u', target['user'], '--', *argv], env=env)
+        return command(argv, env=env)
+
+    def inspect_daemon(self, target):
+        verify_socket_owner(target, self.account(target).pw_uid)
+        info = json.loads(self.owner_command(target, ['docker', '--host', 'unix://' + target['socket'],
+                                                     'info', '--format', '{{json .}}']))
+        if not isinstance(info, dict) or not isinstance(info.get('ID'), str) or not info['ID']:
+            raise ValueError('selected Docker daemon did not report its identity')
+        security = info.get('SecurityOptions')
+        if not isinstance(security, list) or any(not isinstance(value, str) for value in security):
+            raise ValueError('selected Docker daemon did not report valid SecurityOptions')
+        if ('name=rootless' in security) != (target['kind'] == 'rootless'):
+            raise ValueError(f"daemon at {target['socket']} does not match kind {target['kind']}")
+        if target['daemon_config'] is not None:
+            version = info.get('ServerVersion', '').split('.')[0]
+            if not version.isdigit() or int(version) < 28:
+                raise ValueError('managed cache GC requires the selected Docker daemon to run Engine 28 or newer')
+        print(f"Target {target['name']}: user={target['user']} socket={target['socket']} daemon={info['ID']}")
+        return info
+
+    def shared_files(self):
+        return {
+            f'{RUNTIME}/docker-clean': ((REPO / 'fixtures/bin/vps-docker-clean').read_bytes(), 0o755),
+            f'{RUNTIME}/auto_cleanup_config.py': ((REPO / 'fixtures/bin/auto_cleanup_config.py').read_bytes(), 0o644),
+            f'{UNITS}/auto-cleanup-docker@.service': ((REPO / 'fixtures/systemd/auto-cleanup-docker@.service').read_bytes(), 0o644),
+            f'{UNITS}/auto-cleanup-docker@.timer': ((REPO / 'fixtures/systemd/auto-cleanup-docker@.timer').read_bytes(), 0o644),
+        }
+
+    def validate_destinations(self, files):
+        for destination in files:
+            self.safe(self.path(destination))
+
+    def state_directory(self, target):
+        directory = self.path(target['image_protection_file']).parent
+        owner = self.account(target) if self.live else None
+        for parent in directory.parents:
+            if parent.is_symlink() or (parent.exists() and not parent.is_dir()):
+                raise ValueError(f'protection directory parent {parent} is not a plain directory')
+            if owner and parent.exists() and (parent.stat().st_uid not in (0, owner.pw_uid) or parent.stat().st_mode & 0o022):
+                raise ValueError(f'protection directory parent {parent} has unrelated or writable ownership')
+        if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+            raise ValueError(f'protection directory {directory} is not a plain directory')
+        if directory.exists() and (directory.stat().st_mode & 0o022 or
+                                   (owner and directory.stat().st_uid != owner.pw_uid)):
+            raise ValueError(f'protection directory {directory} must be owned by the cleanup account without group/other write access')
+        return directory, owner
+
+    def prepare_state(self, target):
+        directory, owner = self.state_directory(target)
+        if not directory.exists():
+            print(f'Create protection directory {directory}')
+            if not self.dry:
+                ancestor = directory.parent
+                while not ancestor.exists():
+                    ancestor = ancestor.parent
+                if owner and ancestor.stat().st_uid != 0:
+                    self.owner_command(target, ['python3', '-c',
+                        'import pathlib,sys; p=pathlib.Path(sys.argv[1]); p.mkdir(parents=True,mode=0o700); p.chmod(0o700)', str(directory)])
+                else:
+                    self.make_owned_parents(directory.parent)
+                    directory.mkdir(mode=0o700)
+                    directory.chmod(0o700)
+                    if owner:
+                        descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                        try:
+                            os.fchown(descriptor, owner.pw_uid, owner.pw_gid)
+                        finally:
+                            os.close(descriptor)
+
+    def merge_argv(self, target, *extra):
+        return ['python3', self.merge_tools[0],
+                '--daemon-json', self.path(target['daemon_config']),
+                '--policy-json', self.merge_tools[1],
+                '--cache-gib', str(target['cache_gib']), *extra]
+
+    @contextlib.contextmanager
+    def daemon_candidate(self, target):
+        if target['daemon_config'] is None:
+            yield None
+            return
+        path = self.path(target['daemon_config'])
+        self.safe(path)
+        if self.live and target['kind'] == 'rootful':
+            for parent in path.parents:
+                if parent.exists() and (parent.stat().st_uid != 0 or parent.stat().st_mode & 0o022):
+                    raise ValueError(f'rootful daemon configuration parent {parent} is not protected by root ownership')
+        with tempfile.TemporaryDirectory(prefix='auto-cleanup-daemon-') as scratch:
+            previous_tools = self.merge_tools
+            scratch = Path(scratch)
+            if self.live and target['kind'] == 'rootless':
+                # Only these public tool inputs are readable by the daemon owner.
+                scratch.chmod(0o711)
+                helper, policy = scratch / 'merge.py', scratch / 'logging.json'
+                shutil.copyfile(previous_tools[0], helper)
+                shutil.copyfile(previous_tools[1], policy)
+                helper.chmod(0o644)
+                policy.chmod(0o644)
+                self.merge_tools = helper, policy
+            candidate = Path(scratch) / 'daemon.json'
+            try:
+                argv = self.merge_argv(target, '--print-json')
+                text = self.owner_command(target, argv) if self.live else command(argv)
+                descriptor = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(descriptor, 'w') as stream:
+                    stream.write(text + '\n')
+                if self.live:
+                    command(['dockerd', '--validate', '--config-file', candidate])
+                yield candidate
+            finally:
+                self.merge_tools = previous_tools
+
+    def quiesce(self, target):
+        self.systemctl('disable', '--now', unit_name(target, 'timer'))
+        self.systemctl('stop', unit_name(target, 'service'))
+
+    def duplicate_target(self, target, daemon_info):
+        reserved = (CONFIG, RUNTIME, UNITS)
+        for key in ('daemon_config', 'image_protection_file'):
+            value = target[key]
+            if value and any(value == prefix or value.startswith(prefix + '/') for prefix in reserved):
+                raise ValueError(f'{key} cannot overlap lifecycle-owned paths')
+            if value and value in [destination for _, destination in HOST_FILES.values()]:
+                raise ValueError(f'{key} cannot overlap host policy paths')
+        selected_paths = [value for value in (target['daemon_config'], target['image_protection_file'],
+                                              target['image_protection_file'] + '.lock') if value]
+        if any(paths_overlap(a, b) for i, a in enumerate(selected_paths) for b in selected_paths[i + 1:]):
+            raise ValueError('daemon configuration, protection inventory and lock paths must be distinct')
+        selected_socket = Path(target['socket']).resolve()
+        for other in self.registered():
+            if other['name'] == target['name']:
+                for key in ('kind', 'user', 'socket', 'image_protection_file'):
+                    if other[key] != target[key]:
+                        raise ValueError(f'cannot change enrolled target {key}; remove and enroll the target explicitly')
+                continue
+            if Path(other['socket']).resolve() == selected_socket:
+                raise ValueError(f"socket is already enrolled as {other['name']}")
+            if other['image_protection_file'] == target['image_protection_file']:
+                raise ValueError(f"protection path is already used by {other['name']}")
+            other_paths = [value for value in (other['daemon_config'], other['image_protection_file'],
+                                               other['image_protection_file'] + '.lock') if value]
+            if any(paths_overlap(a, b) for a in selected_paths for b in other_paths):
+                raise ValueError(f"managed paths overlap target {other['name']}")
+            if daemon_info and self.inspect_daemon(other)['ID'] == daemon_info['ID']:
+                raise ValueError(f"daemon is already enrolled as {other['name']}")
+
+    def install_target(self, migrating=False):
+        if self.args.config:
+            target = load_target(self.args.config)
+        elif self.args.name:
+            target = self.target(self.args.name)
+        else:
+            raise ValueError('docker install requires --config FILE for enrollment or a saved target name for update')
+        if self.args.name and target['name'] != self.args.name:
+            raise ValueError('supplied target name disagrees with configuration')
+        if self.args.restart_docker and target['daemon_config'] is None:
+            raise ValueError('--restart-docker requires managed daemon configuration')
+        if not migrating and target['kind'] == 'rootful' and self.path(f'{UNITS}/vps-docker-clean.service').exists():
+            raise ValueError('legacy rootful cleanup exists; use docker migrate to prevent overlapping cleanup')
+        info = self.inspect_daemon(target) if self.live else None
+        self.duplicate_target(target, info)
+        files = target_files(target)
+        self.validate_destinations({**self.shared_files(), **files})
+        self.state_directory(target)
+        with self.daemon_candidate(target) as candidate, self.pause_runtime_users(target):
+            timer_was_active = False
+            if self.target_path(target['name']).exists():
+                timer_was_active = self.pause_target(target)
+            if migrating:
+                self.quiesce_legacy()
+            self.prepare_state(target)
+            for destination, (data, mode) in self.shared_files().items():
+                self.write(destination, data, mode)
+            if candidate:
+                daemon_change = self.apply_daemon_config(target, candidate)
+            for destination, text in files.items():
+                self.write(destination, text)
+            self.systemctl('daemon-reload')
+            if self.args.restart_docker:
+                self.restart_with_recovery(target, daemon_change)
+            if self.args.enable_timer:
+                self.systemctl('enable', '--now', unit_name(target, 'timer'))
+            elif timer_was_active:
+                self.systemctl('start', unit_name(target, 'timer'))
+            else:
+                print('Cleanup timer left disabled; enable it explicitly after reviewing protection.')
+
+    def apply_daemon_config(self, target, candidate):
+        print(f"Apply daemon policy at {target['daemon_config']}; activation requires a daemon restart")
+        if self.dry:
+            return
+        digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+        argv = self.merge_argv(target, '--expect-output-sha256', digest)
+        result = self.owner_command(target, argv) if self.live else command(argv)
+        print(result)
+        return result
+
+    def pause_target(self, target):
+        active = False
+        if self.live:
+            state = command(['systemctl', 'show', unit_name(target, 'timer'), '-p', 'ActiveState', '--value'])
+            active = state in ('active', 'activating')
+        self.systemctl('stop', unit_name(target, 'timer'))
+        self.systemctl('stop', unit_name(target, 'service'))
+        return active
+
+    @contextlib.contextmanager
+    def pause_runtime_users(self, selected):
+        changed = any(not self.path(path).exists() or self.path(path).read_bytes() != data
+                      for path, (data, _) in self.shared_files().items())
+        paused = []
+        if changed:
+            for target in self.registered():
+                if target['name'] != selected['name']:
+                    paused.append((target, self.pause_target(target)))
+        try:
+            yield
+        except BaseException:
+            if paused:
+                print('Shared runtime update failed; affected cleanup timers remain stopped. Inspect before restarting.', file=sys.stderr)
+            raise
+        else:
+            for target, active in paused:
+                if active:
+                    self.systemctl('start', unit_name(target, 'timer'))
+
+    def restart_with_recovery(self, target, result):
+        try:
+            self.restart_daemon(target)
+        except (RuntimeError, subprocess.TimeoutExpired):
+            path = target['daemon_config']
+            backup = next((line.split(' to ', 1)[1] for line in result.splitlines() if line.startswith('backed up ')), None)
+            if backup:
+                self.owner_command(target, ['cp', '--preserve=mode,ownership,timestamps', backup, path])
+            elif result.startswith('updated '):
+                self.owner_command(target, ['rm', '--', path])
+            print('Daemon restart failed; previous configuration restored. Other installation changes remain.', file=sys.stderr)
+            self.restart_daemon(target)
+            raise
+
+    def restart_daemon(self, target):
+        if not self.live:
+            return
+        print(f"Restart {target['daemon_service']} for {target['user']}")
+        if not self.dry:
+            argv = ['systemctl'] + (['--user'] if target['kind'] == 'rootless' else [])
+            self.owner_command(target, [*argv, 'restart', target['daemon_service']])
+
+    def check_files(self, files):
+        for destination, expected in files.items():
+            path = self.path(destination)
+            self.safe(path)
+            if not path.exists() or path.read_bytes() != (expected.encode() if isinstance(expected, str) else expected):
+                raise ValueError(f'installed file differs or is missing: {destination}')
+            if self.live and (path.stat().st_uid != 0 or path.stat().st_mode & 0o022):
+                raise ValueError(f'installed file is not protected by root ownership: {destination}')
+            print(f'OK {destination}')
+
+    def check_target(self):
+        target = self.target(self.args.name)
+        self.check_files({path: data for path, (data, _) in self.shared_files().items()})
+        runtime = self.path(f'{RUNTIME}/docker-clean')
+        if runtime.stat().st_mode & 0o111 != 0o111:
+            raise ValueError('installed Docker cleanup runtime is not executable')
+        self.check_files({path: data for path, data in target_files(target).items() if not path.endswith('.json')})
+        self.state_directory(target)
+        if target['daemon_config'] is not None:
+            with self.daemon_candidate(target):
+                argv = self.merge_argv(target, '--check')
+                self.owner_command(target, argv) if self.live else command(argv)
+            print('Daemon logging and cache policy match on disk; this does not prove activation.')
+        else:
+            print('Daemon configuration and cache budget are unmanaged.')
+        if self.args.live:
+            if not self.live:
+                raise ValueError('--live cannot be used with --root')
+            self.inspect_daemon(target)
+            print(command(['systemctl', 'show', unit_name(target, 'timer'), '-p', 'ActiveState', '-p', 'UnitFileState']))
+
+    def remove_target(self):
+        target = self.target(self.args.name)
+        self.validate_destinations(target_files(target))
+        self.quiesce(target)
+        for destination in target_files(target):
+            self.remove(destination)
+        others = [other for other in self.registered() if other['name'] != target['name']]
+        if not others:
+            for destination in self.shared_files():
+                self.remove(destination)
+        self.systemctl('daemon-reload')
+        print('Preserved daemon configuration, protection inventory/lock, images, containers and volumes.')
+
+    def host_config(self):
+        path = self.path(f'{CONFIG}/host.json')
+        source = Path(self.args.config) if self.args.config else path
+        if self.args.config or source.exists():
+            value = read_json(source, trusted=self.live and not self.args.config)
+        elif self.args.action == 'install':
+            value = {key: True for key in HOST_FILES}
+        else:
+            raise ValueError('host maintenance is not enrolled')
+        if not isinstance(value, dict) or set(value) != set(HOST_FILES) or any(type(v) is not bool for v in value.values()):
+            raise ValueError('host configuration must contain boolean journald, apt and btmp choices')
+        return value
+
+    def native_policy(self, component, plan=False):
+        if component == 'apt':
+            argv = ['python3', REPO / 'lib/apt-cleanup-policy.py', '--apt-dir', self.path('/etc/apt')]
+            if plan:
+                argv += ['--candidate-policy', REPO / HOST_FILES['apt'][0]]
+        else:
+            argv = ['python3', REPO / 'lib/btmp-policy.py', '--directory', self.path('/etc/logrotate.d'),
+                    '--reference-policy', REPO / HOST_FILES['btmp'][0]]
+            if plan:
+                argv += ['--plan']
+        return command(argv)
+
+    def install_host(self):
+        selection = self.host_config()
+        files = {destination: (REPO / source).read_bytes() for key, (source, destination) in HOST_FILES.items() if selection[key]}
+        plans = {key: self.native_policy(key, plan=True) for key in ('apt', 'btmp') if selection[key]}
+        self.validate_destinations({**files, f'{CONFIG}/host.json': ''})
+        old_path = self.path(f'{CONFIG}/host.json')
+        old = read_json(old_path) if old_path.exists() else {}
+        for key, (source, destination) in HOST_FILES.items():
+            if selection[key] and plans.get(key, 'install') == 'install':
+                self.write(destination, files[destination])
+            elif not selection[key] and old.get(key):
+                self.remove(destination)
+        self.write(f'{CONFIG}/host.json', json.dumps(selection, indent=2, sort_keys=True) + '\n')
+        if selection['journald'] or old.get('journald'):
+            self.systemctl('restart', 'systemd-journald')
+
+    def check_host(self):
+        selection = self.host_config()
+        for key, (source, destination) in HOST_FILES.items():
+            if not selection[key]:
+                print(f'Unmanaged host component: {key}')
+                continue
+            path = self.path(destination)
+            if key == 'journald' or path.exists():
+                self.check_files({destination: (REPO / source).read_bytes()})
+            if key in ('apt', 'btmp'):
+                print(self.native_policy(key))
+
+    def remove_host(self):
+        selection = self.host_config()
+        self.validate_destinations([destination for key, (_, destination) in HOST_FILES.items() if selection[key]])
+        for key, (_, destination) in HOST_FILES.items():
+            if selection[key]:
+                self.remove(destination)
+        self.remove(f'{CONFIG}/host.json')
+        if selection['journald']:
+            self.systemctl('restart', 'systemd-journald')
+
+    def quiesce_legacy(self):
+        self.systemctl('disable', '--now', 'vps-docker-clean.timer')
+        self.systemctl('stop', 'vps-docker-clean.service')
+
+    def migrate_target(self):
+        raise ValueError('legacy migration is not yet available; keep the existing installation unchanged')
+
+
+def parser():
+    result = argparse.ArgumentParser(description=__doc__)
+    result.add_argument('scope', choices=('host', 'docker'))
+    result.add_argument('action', choices=('install', 'check', 'remove', 'list', 'migrate'))
+    result.add_argument('name', nargs='?')
+    result.add_argument('--config', help='reviewed JSON configuration; omitted on update to use saved settings')
+    result.add_argument('--root', help='absolute staged root; no daemon access or service actions')
+    result.add_argument('--dry-run', action='store_true', help='preview managed changes without applying them')
+    result.add_argument('--enable-timer', action='store_true', help='explicitly enable scheduled deletion after installation')
+    result.add_argument('--restart-docker', action='store_true', help='explicitly restart the selected daemon')
+    result.add_argument('--live', action='store_true', help='also inspect the selected daemon and timer during a check')
+    return result
+
+
+def main():
+    args = parser().parse_args()
+    if args.scope == 'host' and args.action not in ('install', 'check', 'remove'):
+        raise ValueError('host supports install, check and remove')
+    if args.scope == 'docker' and args.action in ('check', 'remove') and not args.name:
+        raise ValueError(f'docker {args.action} requires a target name')
+    if args.action != 'install' and (args.enable_timer or args.restart_docker):
+        raise ValueError('timer activation and daemon restart are install options')
+    if args.config and args.action not in ('install', 'migrate'):
+        raise ValueError('--config is only accepted for installation or migration; checks and removal use saved settings')
+    if args.scope == 'host' and (args.name or args.enable_timer or args.restart_docker or args.live):
+        raise ValueError('host maintenance does not accept target names or Docker options')
+    installation = Installation(args)
+    with lifecycle_lock(installation):
+        dispatch(installation)
+
+
+@contextlib.contextmanager
+def lifecycle_lock(installation):
+    if installation.dry or installation.args.action in ('check', 'list'):
+        yield
+        return
+    path = (Path('/run/lock/auto-cleanup.install.lock') if installation.live else
+            installation.root.parent / ('.' + installation.root.name + '.auto-cleanup.lock'))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'r+') as stream:
+        metadata = os.fstat(stream.fileno())
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
+            raise ValueError('installation lock must be owned by the lifecycle account without group/other write access')
+        try:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise ValueError('another auto-cleanup lifecycle command holds the installation lock') from error
+        yield
+
+
+def dispatch(installation):
+    args = installation.args
+    if args.scope == 'host':
+        getattr(installation, args.action + '_host')()
+    elif args.action == 'list':
+        for target in installation.registered():
+            print(f"{target['name']} {target['kind']} {target['user']} {target['socket']}")
+    else:
+        getattr(installation, args.action + '_target')()
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.TimeoutExpired) as error:
+        print(f'Cannot {" ".join(sys.argv[1:3])}: {error}. Earlier managed changes may remain; inspect before retrying.', file=sys.stderr)
+        sys.exit(1)

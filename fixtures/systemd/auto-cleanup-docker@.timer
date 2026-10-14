@@ -1,0 +1,11 @@
+[Unit]
+Description=Schedule Docker retention for %i
+
+[Timer]
+Unit=auto-cleanup-docker@%i.service
+Persistent=true
+RandomizedDelaySec=1h
+AccuracySec=1h
+
+[Install]
+WantedBy=timers.target

@@ -28,5 +28,8 @@ RUN apt-get update \
 
 WORKDIR /work
 COPY . /work
+# Runtime fixtures exercise the same root-owned configuration boundary as /etc.
+RUN chmod 0755 /work /work/tests /work/tests/fixtures
+RUN chmod 0644 /work/tests/fixtures/target-rootful.json /work/tests/fixtures/target-rootless.json
 
 CMD ["/bin/sh"]

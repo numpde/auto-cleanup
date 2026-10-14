@@ -106,6 +106,12 @@ def load_target(path, trusted=False):
     return validate_target(read_json(path, trusted=trusted))
 
 
+def verify_socket_owner(target, uid):
+    metadata = os.stat(target['socket'])
+    if not stat.S_ISSOCK(metadata.st_mode) or metadata.st_uid != uid:
+        raise ValueError(f"Docker socket {target['socket']} must be a Unix socket owned by {target['user']}")
+
+
 def retention_environment(target):
     values = {env: str(target[key]) for key, env in RETENTION_ENV.items()}
     values['IMAGE_KEEP_TAGS'] = ' '.join(target['image_keep_tags'])

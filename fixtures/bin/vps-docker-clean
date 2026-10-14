@@ -16,7 +16,7 @@ def configured_target(arguments):
         return None, arguments
     if len(arguments) not in (2, 3) or (len(arguments) == 3 and arguments[2] != '--show-policy'):
         raise ValueError('Usage: vps-docker-clean --config FILE [--show-policy]')
-    from auto_cleanup_config import load_target, retention_environment
+    from auto_cleanup_config import load_target, retention_environment, verify_socket_owner
     import pwd
 
     path = Path(arguments[1])
@@ -24,6 +24,7 @@ def configured_target(arguments):
     if arguments[2:] != ['--show-policy']:
         if pwd.getpwnam(target['user']).pw_uid != os.geteuid():
             raise ValueError(f"cleanup for {target['name']} must run as {target['user']}")
+        verify_socket_owner(target, os.geteuid())
     os.environ.update(retention_environment(target))
     for key in ('BUILD_CACHE_UNTIL', 'BUILD_CACHE_RESERVED', 'ALLOW_BUILDX_PRUNE'):
         os.environ.pop(key, None)

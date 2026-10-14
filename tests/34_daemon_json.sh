@@ -5,6 +5,7 @@ REPO_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 . "$SCRIPT_DIR/lib/require-container.sh"
 python3 - "$REPO_DIR" <<'PY'
 import json
+import hashlib
 import contextlib
 import importlib.util
 import io
@@ -43,6 +44,13 @@ with tempfile.TemporaryDirectory(prefix='auto-cleanup-json-', dir=os.environ['TM
     assert result.returncode == 0, result.stderr
     expected = dict(json.loads(original), **valid)
     assert json.loads(output.read_text()) == expected
+    digest = hashlib.sha256(output.read_bytes()).hexdigest()
+    changed_source = '{"data-root":"/kept","debug":true}\n'
+    daemon.write_text(changed_source)
+    result = subprocess.run(command + ['--expect-output-sha256', digest], text=True, capture_output=True)
+    assert result.returncode != 0 and 'changed after validation' in result.stderr
+    assert daemon.read_text() == changed_source and not list(root.glob('*.bak.*'))
+    daemon.write_text(original)
     assert daemon.read_text() == original and not list(root.glob('*.bak.*'))
     assert daemon.stat().st_mode == metadata.st_mode
     assert (daemon.stat().st_uid, daemon.stat().st_gid) == (metadata.st_uid, metadata.st_gid)

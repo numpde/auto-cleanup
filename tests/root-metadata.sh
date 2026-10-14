@@ -66,3 +66,4 @@ test "$backup_mode" = "644"
 test "$backup_owner" = "123:123"
 
 echo "root metadata ok"
+python3 "$SCRIPT_DIR/target_runtime.py"
