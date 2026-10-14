@@ -1041,7 +1041,7 @@ if FAKE_DOCKER_LOG="$FAKE_ROOT/docker-down.log" \
     echo 'cleanup unexpectedly succeeded while Docker was down' >&2
     exit 1
 fi
-grep -q 'local Docker daemon is not reachable' "$FAKE_ROOT/docker-down.err"
+grep -q 'Docker daemon at unix:///var/run/docker.sock is not reachable' "$FAKE_ROOT/docker-down.err"
 if PATH="$FAKE_ROOT/empty-path" \
     DOCKER=docker \
     "$REPO_DIR/fixtures/bin/vps-docker-clean" >/dev/null 2>&1; then

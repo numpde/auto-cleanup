@@ -90,6 +90,21 @@ assert result.returncode == 0, result.stderr
 assert remaining == {CURRENT, YOUNG}, remaining
 assert f'image rm --no-prune {OLD}' in log
 
+selected = {'AUTO_CLEANUP_DOCKER_SOCKET': '/run/user/1000/docker.sock',
+            'EXPECTED_DOCKER_ENDPOINT': 'unix:///run/user/1000/docker.sock',
+            'DOCKER_HOST': 'tcp://unrelated:2375', 'DOCKER_CONTEXT': 'unrelated',
+            'DOCKER_TLS': '1', 'DOCKER_TLS_VERIFY': '1', 'DOCKER_CERT_PATH': '/unrelated'}
+result, log, remaining = exercise(overrides=selected)
+assert result.returncode == 0 and remaining == {CURRENT, YOUNG}, result.stderr
+result, log, remaining = exercise(overrides=selected, show_policy=True)
+assert result.returncode == 0 and not log and 'Docker endpoint: unix:///run/user/1000/docker.sock' in result.stdout
+result, log, remaining = exercise(state=dict(STATE, daemon_down=True), overrides=selected)
+assert result.returncode != 0 and log.splitlines() == ['info --format {{json .}}']
+assert remaining == {CURRENT, OLD, YOUNG} and '/run/user/1000/docker.sock' in result.stderr
+for socket in ('', 'tcp://host:2375', 'relative.sock', '/', '/run/../docker.sock'):
+    result, log, remaining = exercise(overrides={'AUTO_CLEANUP_DOCKER_SOCKET': socket})
+    assert result.returncode != 0 and not log and remaining == {CURRENT, OLD, YOUNG}
+
 # Every container reference protects an image even when disposable pruning runs.
 state = copy.deepcopy(STATE)
 state['containers'] = {'stopped': OLD}

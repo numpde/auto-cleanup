@@ -42,12 +42,19 @@ def unique_object(pairs):
 
 
 def docker(*args, capture=True):
-    command = [os.environ.get("DOCKER", "docker"), "--host", "unix:///var/run/docker.sock", *args]
+    command = [os.environ.get("DOCKER", "docker"), "--host", docker_endpoint(), *args]
     result = subprocess.run(command, text=True, stdout=subprocess.PIPE if capture else None,
                             timeout=120, check=False)
     if result.returncode:
         raise RuntimeError(f"Docker command failed ({result.returncode}): {' '.join(args)}")
     return result.stdout
+
+
+def docker_endpoint():
+    socket = os.environ.get("AUTO_CLEANUP_DOCKER_SOCKET", "/var/run/docker.sock")
+    if not socket.startswith("/") or "\x00" in socket or any(part in (".", "..") for part in socket.split("/")) or socket.endswith("/"):
+        raise ValueError("AUTO_CLEANUP_DOCKER_SOCKET must name an absolute local socket path")
+    return "unix://" + socket
 
 
 def inspect(kind, reference):
@@ -218,6 +225,7 @@ def retain_images(protection, container_ids, root, minimum_free, cutoff):
 
 
 def main():
+    endpoint = docker_endpoint()
     obsolete = {"BUILD_CACHE_UNTIL", "BUILD_CACHE_RESERVED", "ALLOW_BUILDX_PRUNE"} & os.environ.keys()
     if obsolete:
         raise ValueError("Cannot run cleanup with obsolete cache overrides; remove BUILD_CACHE_UNTIL, BUILD_CACHE_RESERVED and ALLOW_BUILDX_PRUNE. Cache is now managed by Docker GC; set its budget with install.sh --cache-gib.")
@@ -239,7 +247,7 @@ def main():
         if protection.mode == "tags":
             print(f"IMAGE_KEEP_TAGS={' '.join(protection.tags)}")
         print(f"IMAGE_PROTECTION_FILE={protection.path}")
-        print("Container selector: auto-cleanup.disposable=true\nDocker endpoint: unix:///var/run/docker.sock")
+        print(f"Container selector: auto-cleanup.disposable=true\nDocker endpoint: {endpoint}")
         return 0
     if sys.argv[1:]:
         raise ValueError("Usage: vps-docker-clean [--show-policy]")
@@ -248,7 +256,7 @@ def main():
     try:
         info = json.loads(docker("info", "--format", "{{json .}}"))
     except RuntimeError as error:
-        raise RuntimeError(f"local Docker daemon is not reachable: {error}") from error
+        raise RuntimeError(f"Docker daemon at {endpoint} is not reachable: {error}") from error
     if not isinstance(info["ID"], str) or not info["ID"]:
         raise ValueError("Docker did not report its daemon identity")
     root = info["DockerRootDir"]

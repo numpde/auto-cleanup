@@ -7,11 +7,14 @@ import sys
 
 state_path = Path(os.environ['RETENTION_STATE'])
 state = json.loads(state_path.read_text())
-assert sys.argv[1:3] == ['--host', 'unix:///var/run/docker.sock']
+assert sys.argv[1:3] == ['--host', os.environ.get('EXPECTED_DOCKER_ENDPOINT', 'unix:///var/run/docker.sock')]
+assert not any(key in os.environ for key in ('DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_TLS', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH'))
 args = sys.argv[3:]
 with Path(os.environ['FAKE_DOCKER_LOG']).open('a') as stream:
     stream.write(' '.join(args) + '\n')
 if args[0] == 'info':
+    if state.get('daemon_down'):
+        sys.exit(1)
     print(json.dumps({'ID': 'test-daemon', 'DockerRootDir': str(state_path.parent)}))
 elif args[:2] == ['image', 'inspect']:
     reference = args[2]
