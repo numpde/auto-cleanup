@@ -1,3 +1,4 @@
+# Source: https://github.com/numpde/auto-cleanup
 /var/log/btmp {
     monthly
     missingok

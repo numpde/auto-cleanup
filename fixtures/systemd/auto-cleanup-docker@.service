@@ -1,5 +1,6 @@
 [Unit]
-Description=Retain Docker resources for %i
+Description=auto-cleanup: retain Docker resources for %i
+Documentation=https://github.com/numpde/auto-cleanup#readme
 
 [Service]
 Type=oneshot

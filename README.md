@@ -92,6 +92,12 @@ installation, checks, updates and removal.
 | `/etc/systemd/system/` | Cleanup service/timer templates and target drop-ins |
 | `/var/lib/auto-cleanup/NAME/` | Protection directory used by the examples; the target selects its actual path |
 
+Installed cleanup units identify auto-cleanup in their descriptions and expose
+the repository's README through systemd's `Documentation` field. Managed host
+policy files also include a source URL. The checkout's Git revision identifies
+the source available for installation; `docker check` compares installed files
+with that checkout.
+
 Review [examples/host.json](examples/host.json). Its boolean `journald`, `apt`,
 and `btmp` selections are persisted at `/etc/auto-cleanup/host.json`. Set a
 component to `false` to leave it unmanaged. On updates, deselecting a previously

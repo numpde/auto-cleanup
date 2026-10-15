@@ -1,5 +1,6 @@
 [Unit]
-Description=Schedule Docker retention for %i
+Description=auto-cleanup: schedule Docker retention for %i
+Documentation=https://github.com/numpde/auto-cleanup#readme
 
 [Timer]
 Unit=auto-cleanup-docker@%i.service
