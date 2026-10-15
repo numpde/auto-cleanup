@@ -18,12 +18,15 @@ TARGET = dict(name='agent-mail', kind='rootless', user='test-runner',
               image_min_free_gib=0, image_protection_mode='none', image_keep_tags=[],
               image_protection_file='/var/lib/auto-cleanup/agent-mail/images.json')
 assert validate_target(TARGET) == TARGET
+assert validate_target(dict(TARGET, network_until=None))['network_until'] is None
 for example in ('rootful', 'agent-mail'):
     assert validate_target(json.loads((REPO / f'examples/{example}.json').read_text()))
 for key, value in [('socket', 'tcp://host:2375'), ('name', '../other'), ('user', 'root'),
                    ('kind', 'auto'), ('cache_gib', True), ('cache_gib', 0),
                    ('schedule', 'hourly'), ('daemon_service', 'docker.service;bad'),
                    ('image_until', '0h'), ('image_until', '999999999999999999999h'), ('image_protection_mode', 'unknown'),
+                   ('network_until', False), ('network_until', 0), ('network_until', ''),
+                   ('network_until', 'null'), ('network_until', '0h'), ('container_until', None), ('image_until', None),
                    ('image_keep_tags', ['app:latest']), ('daemon_config', '/home/../etc/docker.json')]:
     changed = dict(TARGET, **{key: value})
     try:
@@ -32,7 +35,8 @@ for key, value in [('socket', 'tcp://host:2375'), ('name', '../other'), ('user',
         pass
     else:
         raise AssertionError(f'accepted invalid target: {key}={value!r}')
-for changed in (dict(TARGET, network_until='3000000h'),
+for changed in ({key: value for key, value in TARGET.items() if key != 'network_until'},
+                dict(TARGET, network_until='3000000h'),
                 dict(TARGET, image_protection_mode='tags', image_keep_tags=['repo:tag@bad'])):
     try:
         validate_target(changed)
@@ -51,6 +55,10 @@ with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as scratch:
     reported = json.loads(result.stdout)
     assert reported['image_until'] == '168h' and reported['image_protection_mode'] == 'none'
     assert reported['socket'] == '/run/user/65532/docker.sock' and '/wrong.sock' not in result.stdout
+    config.write_text(json.dumps(dict(TARGET, network_until=None)))
+    result = subprocess.run([str(REPO / 'fixtures/bin/vps-docker-clean'), '--config', str(config), '--show-policy'],
+                            env=env, text=True, capture_output=True, timeout=15)
+    assert result.returncode == 0 and json.loads(result.stdout)['network_until'] is None, result.stderr
     result = subprocess.run([str(REPO / 'fixtures/bin/vps-docker-clean'), '--config', str(config)],
                             text=True, capture_output=True, timeout=15)
     assert result.returncode != 0 and 'root-owned' in result.stderr, result.stderr

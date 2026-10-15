@@ -75,6 +75,8 @@ def validate_target(target):
         raise ValueError('schedule must be daily or weekly')
     integer(target['image_min_free_gib'], 'image_min_free_gib', 0, 8589934591)
     for key in ('container_until', 'network_until', 'image_until'):
+        if key == 'network_until' and target[key] is None:
+            continue
         if not isinstance(target[key], str) or not re.fullmatch(r'[1-9][0-9]*h', target[key]):
             raise ValueError(f'{key} must be positive whole hours, such as 24h')
         # Docker parses prune ages as Go durations: signed int64 nanoseconds.

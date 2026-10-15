@@ -99,6 +99,21 @@ result, log, remaining = exercise()
 assert result.returncode == 0, result.stderr
 assert remaining == {CURRENT, YOUNG}, remaining
 assert f'image rm --no-prune {OLD}' in log
+assert 'network prune -f --filter until=24h' in log
+
+result, log, remaining = exercise(policy={'network_until': None})
+assert result.returncode == 0 and remaining == {CURRENT, YOUNG}, result.stderr
+assert 'network ' not in log
+assert 'container prune -f --filter until=24h --filter label=auto-cleanup.disposable=true' in log
+
+state = dict(STATE, containers={'stopped-disposable': OLD}, disposable_containers=True)
+result, log, remaining = exercise(state=state, policy={'network_until': None})
+assert result.returncode == 0 and remaining == {CURRENT, OLD, YOUNG}, result.stderr
+assert 'network ' not in log
+
+for inputs in ({'locked': True}, {'inventory': None}, {'inventory': '{}'}):
+    result, log, remaining = exercise(policy={'network_until': None}, **inputs)
+    assert result.returncode != 0 and 'prune' not in log and 'image rm' not in log
 
 selected = {'socket': '/run/user/1000/selected.sock'}
 ambient = {'DOCKER_HOST': 'tcp://unrelated:2375', 'DOCKER_CONTEXT': 'unrelated',
@@ -184,10 +199,11 @@ result, log, remaining = exercise(state=state)
 assert result.returncode != 0 and 'prune' not in log and 'Traceback' not in result.stderr
 assert 'cannot resolve one image object' in result.stderr
 
-state = copy.deepcopy(STATE)
-state['change_inventory'] = True
-result, log, remaining = exercise(state=state)
-assert result.returncode != 0 and 'network prune' not in log and 'image rm' not in log
+for network_until in ('24h', None):
+    state = copy.deepcopy(STATE)
+    state['change_inventory'] = True
+    result, log, remaining = exercise(state=state, policy={'network_until': network_until})
+    assert result.returncode != 0 and 'network prune' not in log and 'image rm' not in log
 
 state = copy.deepcopy(STATE)
 state['refuse_removal'] = True
@@ -285,11 +301,12 @@ for selected in ('example.test/app:missing', 'app:latest'):
     assert result.returncode != 0 and 'prune' not in log and 'image rm' not in log
     assert selected in result.stderr and 'Traceback' not in result.stderr
 
-state = copy.deepcopy(STATE)
-state['remove_tag_on_container_prune'] = TAG
-result, log, remaining = exercise(inventory=None, state=state, policy=tag_options)
-assert result.returncode != 0 and 'container prune' in log
-assert 'network prune' not in log and 'image rm' not in log
+for network_until in ('24h', None):
+    state = copy.deepcopy(STATE)
+    state['remove_tag_on_container_prune'] = TAG
+    result, log, remaining = exercise(inventory=None, state=state, policy=dict(tag_options, network_until=network_until))
+    assert result.returncode != 0 and 'container prune' in log
+    assert 'network prune' not in log and 'image rm' not in log
 
 state = copy.deepcopy(STATE)
 state['malformed_inspect'] = True

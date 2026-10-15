@@ -258,8 +258,12 @@ def run_cleanup(target):
         protection.load(info["ID"])
         container_ids = container_images(target)
         failures = False
-        for args in (("container", "prune", "-f", "--filter", f"until={target['container_until']}", "--filter", "label=auto-cleanup.disposable=true"),
-                     ("network", "prune", "-f", "--filter", f"until={target['network_until']}")):
+        prunes = [("container", "prune", "-f", "--filter", f"until={target['container_until']}", "--filter", "label=auto-cleanup.disposable=true")]
+        if target['network_until'] is not None:
+            prunes.append(("network", "prune", "-f", "--filter", f"until={target['network_until']}"))
+        else:
+            print('Network cleanup disabled by policy.', flush=True)
+        for args in prunes:
             try:
                 protection.refresh()
                 docker(target, *args, capture=False)

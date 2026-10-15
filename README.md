@@ -185,7 +185,7 @@ Every field is required; unknown fields and duplicate JSON keys are rejected.
 | `cache_gib` | Positive whole-GiB native build-cache GC target; `null` when unmanaged |
 | `schedule` | `daily` or `weekly` |
 | `container_until` | Disposable stopped-container creation age, e.g. `24h` |
-| `network_until` | Unreferenced-network creation age, e.g. `24h` |
+| `network_until` | Unreferenced-network creation age, e.g. `24h`; `null` leaves all networks untouched |
 | `image_until` | Unprotected-image creation age, e.g. `168h` |
 | `image_min_free_gib` | Free-space floor on the daemon's storage filesystem; `0` disables pressure eviction |
 | `image_protection_mode` | `none`, `tags` or `inventory` |
@@ -211,7 +211,9 @@ Apply this label only when their writable files and logs may be deleted. Other
 containers remain, including stopped and failed containers.
 
 Unreferenced networks older than `network_until` are eligible across the selected
-daemon. Network pruning has no disposable-label filter.
+daemon. Network pruning has no disposable-label filter. Set `network_until` to
+`null` when networks belong to an edge or application deployment lifecycle that
+must manage their removal itself. Container and image retention still run.
 
 All container-referenced images are protected, including stopped containers and
 references captured before disposable containers are removed. Additional image
