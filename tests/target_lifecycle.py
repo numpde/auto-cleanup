@@ -56,6 +56,12 @@ with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as scratch:
     executable.chmod(0o755)
     listing = invoke(root, 'docker', 'list').stdout
     assert 'agent-mail rootless test-runner' in listing and 'traefik rootful root' in listing
+    state = root / 'var/lib/auto-cleanup/agent-mail'
+    state.rmdir()
+    missing_state = invoke(root, 'docker', 'check', 'agent-mail', good=False)
+    assert 'protection directory is missing' in missing_state.stderr
+    invoke(root, 'docker', 'install', 'agent-mail')
+    invoke(root, 'docker', 'check', 'agent-mail')
     registered = root / 'etc/auto-cleanup/docker/agent-mail.json'
     data = json.loads(registered.read_text())
     data['image_until'] = '336h'
