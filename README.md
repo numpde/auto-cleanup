@@ -19,6 +19,59 @@ Rootless Docker commands run through runuser as the owner. Restarting that daemo
 uses the owner's user systemd manager.
 The installer does not install prerequisites, create users or enable Docker.
 
+## Why this design
+
+A shared VPS can have one rootful Docker daemon serving several applications
+alongside rootless daemons owned by individual accounts. Cleanup therefore needs
+an explicit choice of which daemon to manage and which resources to retain.
+
+**Host maintenance and Docker retention have different scopes.** Journald, APT
+and btmp policies apply to the host once. Each Docker daemon has its own images,
+containers and cache budget. Separate enrollment lets you add or remove a daemon
+policy without changing host maintenance. Docker targets share installed cleanup
+code, so updating that code can temporarily pause other targets too.
+
+**The daemon determines the cleanup account.** A non-root Traefik container can
+still belong to a rootful daemon. auto-cleanup runs that daemon's cleanup as root
+and a rootless daemon's cleanup as its owning account. An explicit local socket
+and checks of socket ownership and daemon kind reduce the risk of cleaning the
+wrong daemon through an ambient Docker context.
+
+**One saved JSON file keeps policy consistent.** Installation saves the reviewed
+target settings as root-owned JSON. Checks and the cleanup runner then read that
+saved policy. The installer derives the service account and timer calendar from
+the target settings and checks
+them against systemd before activation. This keeps retention policy from drifting
+between environment overrides, example files and service definitions.
+
+**System timers give the host operator one place to manage cleanup.** Rootful
+and rootless cleanup jobs use the same systemd commands and journal, while each
+service runs as its daemon's owner. This separates responsibility for scheduling
+from the account used to access Docker. The rootless Docker daemon still has to
+be running and reachable when cleanup runs.
+
+**Deployment tooling knows which unused images are still needed.** A rollback
+image may have no container referencing it, so Docker usage alone cannot identify
+every image worth keeping. Inventory mode lets deployment tooling name current,
+rollback and recovery images and coordinate changes through a shared lock.
+The tradeoff is that the deployment tooling must publish and renew that inventory.
+Tags offer simpler explicit protection; the examples' `none` mode adds only
+container-reference protection.
+
+**Writing policy, scheduling cleanup and restarting Docker are separate choices.**
+You can inspect installed settings before enabling a new timer and choose when
+a daemon restart may interrupt applications. Successful updates resume previously
+active cleanup timers. Docker's native cache GC has its own lifecycle: once
+active in the daemon, it can reclaim cache even while the cleanup timer is disabled.
+
+**Separate locations keep source updates and retained state under control.**
+Keep the checkout root-owned because privileged lifecycle commands execute its
+code. Scheduled jobs use installed copies, so pulling source changes does not
+update those jobs until you install them. Configuration lives separately from
+installed code, and removing a target preserves its protection inventory and
+stable lock. This lets you remove scheduling without discarding the deployment
+coordination state.
+
 ## Clone and preview
 
 ```sh
