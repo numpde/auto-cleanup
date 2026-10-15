@@ -15,16 +15,29 @@ Requires Python 3.8+, systemd (including busctl), and standard Linux tools. Host
 also requires apt-config, the distro's APT periodic machinery, and logrotate.
 Docker targets require the Docker CLI; managed native cache GC requires the
 **selected daemon** to run Docker Engine 28+ and a local dockerd validator.
-Rootless operations use runuser and the owning account's user systemd manager.
+Rootless Docker commands run through runuser as the owner. Restarting that daemon
+uses the owner's user systemd manager.
 The installer does not install prerequisites, create users or enable Docker.
 
 ## Clone and preview
 
 ```sh
-git clone https://github.com/numpde/auto-cleanup.git /opt/auto-cleanup
+sudo git clone https://github.com/numpde/auto-cleanup.git /opt/auto-cleanup
 cd /opt/auto-cleanup
 sudo ./scripts/auto-cleanup host install --dry-run
 ```
+
+Use a root-owned checkout; `/opt/auto-cleanup` is the recommended location, not a
+required path. Scheduled cleanup uses installed copies. Keep a checkout for
+installation, checks, updates and removal.
+
+| Location | Purpose |
+| --- | --- |
+| `/opt/auto-cleanup/` | Recommended source checkout |
+| `/etc/auto-cleanup/` | Saved host and Docker target policies |
+| `/usr/local/lib/auto-cleanup/` | Installed cleanup runner and configuration loader |
+| `/etc/systemd/system/` | Cleanup service/timer templates and target drop-ins |
+| `/var/lib/auto-cleanup/NAME/` | Protection directory used by the examples; the target selects its actual path |
 
 Review [examples/host.json](examples/host.json). Its boolean `journald`, `apt`,
 and `btmp` selections are persisted at `/etc/auto-cleanup/host.json`. Set a
@@ -63,6 +76,17 @@ sudo ./scripts/auto-cleanup docker install --config /tmp/agent-mail-cleanup.json
 sudo ./scripts/auto-cleanup docker check agent-mail --live
 ```
 
+Enroll the shared rootful daemon separately. One target covers every application
+using that daemon, including Traefik. Review the copied file before installation:
+
+```sh
+cp examples/rootful.json /tmp/rootful-cleanup.json
+# Edit the copied settings, including image protection.
+sudo ./scripts/auto-cleanup docker install --config /tmp/rootful-cleanup.json --dry-run
+sudo ./scripts/auto-cleanup docker install --config /tmp/rootful-cleanup.json
+sudo ./scripts/auto-cleanup docker check rootful --live
+```
+
 Enrollment contacts exactly the configured local Unix socket under its owner,
 checks socket ownership and daemon kind, and rejects duplicate daemon enrollment
 or overlapping configuration/protection paths. Existing enrolled daemons must
@@ -80,7 +104,10 @@ cleanup timer stopped; reconcile the override before retrying installation.
 The installed JSON at `/etc/auto-cleanup/docker/NAME.json` is the runtime and
 lifecycle authority. It is root-owned and read-only to the cleanup account.
 Systemd runs `auto-cleanup-docker@NAME.service` as that account; one timer
-instance provides its schedule. Inventory and its stable lock belong to the
+instance provides its schedule. All cleanup instances belong to the system
+manager, including rootless targets: manage them with `sudo systemctl`.
+The rootless Docker daemon's own user service is separate.
+Inventory and its stable lock belong to the
 cleanup account. The installer creates a missing protection directory without
 changing ownership of existing directories.
 
@@ -106,6 +133,10 @@ Every field is required; unknown fields and duplicate JSON keys are rejected.
 | `image_keep_tags` | Nonempty list of explicit local repository:tags in `tags` mode; empty otherwise |
 | `image_protection_file` | Absolute inventory path and lock base in every mode |
 
+`daemon_config`, `daemon_service` and `cache_gib` must either all be supplied to
+manage daemon logging and native cache GC together, or all be `null` to leave
+that configuration unmanaged.
+
 Hours must be positive whole numbers without leading zeros, within Docker's
 supported duration range. Paths cannot contain whitespace, dot components or
 shell syntax. The examples select daily cleanup, 24-hour container/network ages,
@@ -119,6 +150,9 @@ update; remove and enroll a target to change its identity.
 Only stopped containers labelled `auto-cleanup.disposable=true` are eligible.
 Apply this label only when their writable files and logs may be deleted. Other
 containers remain, including stopped and failed containers.
+
+Unreferenced networks older than `network_until` are eligible across the selected
+daemon. Network pruning has no disposable-label filter.
 
 All container-referenced images are protected, including stopped containers and
 references captured before disposable containers are removed. Additional image
@@ -207,7 +241,7 @@ Edit a reviewed copy of the saved target and apply it with `--config`, or update
 software using saved settings:
 
 ```sh
-git pull --ff-only
+sudo git pull --ff-only
 sudo ./scripts/auto-cleanup docker install agent-mail
 sudo ./scripts/auto-cleanup host install
 ```
