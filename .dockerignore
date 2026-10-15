@@ -75,6 +75,7 @@ tests/lib/**
 !fixtures/systemd/auto-cleanup-docker@.timer
 !tests/43_target_lifecycle.sh
 !tests/target_lifecycle.py
+!tests/lifecycle_failures.py
 !tests/target_runtime.py
 !tests/fixtures/target-rootful.json
 !tests/fixtures/target-rootless.json

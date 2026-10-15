@@ -374,33 +374,40 @@ class Installation:
         changed = any(not self.path(path).exists() or self.path(path).read_bytes() != data
                       for path, (data, _) in self.shared_files().items())
         paused = []
-        if changed:
-            for target in self.registered():
-                if target['name'] != selected['name']:
-                    paused.append((target, self.pause_target(target)))
+        pause_attempted = False
         try:
+            if changed:
+                for target in self.registered():
+                    if target['name'] != selected['name']:
+                        pause_attempted = True
+                        paused.append((target, self.pause_target(target)))
             yield
-        except BaseException:
-            if paused:
-                print('Shared runtime update failed; affected cleanup timers remain stopped. Inspect before restarting.', file=sys.stderr)
-            raise
-        else:
             for target, active in paused:
                 if active:
                     self.systemctl('start', unit_name(target, 'timer'))
+        except BaseException:
+            if pause_attempted:
+                print('Shared runtime update failed; cleanup timers may remain stopped. Inspect before restarting.', file=sys.stderr)
+            raise
 
     def restart_with_recovery(self, target, result):
         try:
             self.restart_daemon(target)
-        except (RuntimeError, subprocess.TimeoutExpired):
+        except (RuntimeError, subprocess.TimeoutExpired) as restart_error:
             path = target['daemon_config']
             backup = next((line.split(' to ', 1)[1] for line in result.splitlines() if line.startswith('backed up ')), None)
-            if backup:
-                self.owner_command(target, ['cp', '--preserve=mode,ownership,timestamps', backup, path])
-            elif result.startswith('updated '):
-                self.owner_command(target, ['rm', '--', path])
+            try:
+                if backup:
+                    self.owner_command(target, ['cp', '--preserve=mode,ownership,timestamps', backup, path])
+                elif result.startswith('updated '):
+                    self.owner_command(target, ['rm', '--', path])
+            except (OSError, RuntimeError, subprocess.TimeoutExpired) as restore_error:
+                raise RuntimeError(f'Daemon restart failed: {restart_error}; restoring previous configuration also failed: {restore_error}. Inspect {path} before restarting.') from restart_error
             print('Daemon restart failed; previous configuration restored. Other installation changes remain.', file=sys.stderr)
-            self.restart_daemon(target)
+            try:
+                self.restart_daemon(target)
+            except (OSError, RuntimeError, subprocess.TimeoutExpired) as recovery_error:
+                raise RuntimeError(f'Daemon restart failed: {restart_error}; previous configuration restored, but recovery restart also failed: {recovery_error}.') from restart_error
             raise
 
     def restart_daemon(self, target):
