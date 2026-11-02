@@ -114,7 +114,12 @@ sudo ./scripts/auto-cleanup host check
 | btmp | Rotate monthly or over `50M` at a logrotate check; keep one compressed rotation |
 | APT | Refresh package lists daily; autoclean every 7 days; clean every 30 days |
 
-Existing effective APT cleanup and matching external btmp rotation are preserved.
+Existing effective APT cleanup and external btmp rotation with the same size
+limit are preserved, whether logrotate expresses the limit as `size` or
+`maxsize`.
+An existing `size 50M` stanza is preserved as-is and does not also rotate
+monthly; logrotate requires `maxsize 50M` to combine the size cap with a
+calendar interval.
 Native inspectors reject conflicting policies before managed writes. A selected
 repository-owned fixture is refreshed on update. btmp can exceed its threshold
 between logrotate checks. APT uses the distro's existing timers.

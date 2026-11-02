@@ -5,7 +5,7 @@ REPO_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 . "$SCRIPT_DIR/lib/require-container.sh"
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/auto-cleanup-btmp-test.XXXXXX")
 trap 'rm -rf "$scratch"' EXIT INT TERM
-for kind in backup uncapped duplicate wrong-size; do
+for kind in backup uncapped duplicate wrong-size wrong-size-only size-only; do
     stage=$scratch/$kind
     mkdir -p "$stage/etc/logrotate.d"
     case "$kind" in
@@ -15,6 +15,8 @@ for kind in backup uncapped duplicate wrong-size; do
             cp "$REPO_DIR/fixtures/logrotate/btmp" "$stage/etc/logrotate.d/one"
             cp "$REPO_DIR/fixtures/logrotate/btmp" "$stage/etc/logrotate.d/two" ;;
         wrong-size) sed 's/maxsize 50M/maxsize 100M/' "$REPO_DIR/fixtures/logrotate/btmp" > "$stage/etc/logrotate.d/btmp" ;;
+        wrong-size-only) printf '%s\n' '/var/log/btmp {' '    size 100M' '    rotate 1' '}' > "$stage/etc/logrotate.d/btmp" ;;
+        size-only) printf '%s\n' '/var/log/btmp {' '    size 50M' '    rotate 1' '}' > "$stage/etc/logrotate.d/btmp" ;;
     esac
     if [ "$kind" = backup ]; then
         "$REPO_DIR/scripts/install.sh" host --root "$stage" >/dev/null
@@ -24,6 +26,10 @@ for kind in backup uncapped duplicate wrong-size; do
         if "$REPO_DIR/scripts/check.sh" host --root "$stage" >"$scratch/out" 2>&1; then
             echo 'ignored btmp backup accepted by checker' >&2; exit 1
         fi
+    elif [ "$kind" = size-only ]; then
+        "$REPO_DIR/scripts/install.sh" host --root "$stage" >/dev/null
+        test ! -e "$stage/etc/logrotate.d/auto-cleanup-btmp"
+        "$REPO_DIR/scripts/check.sh" host --root "$stage" >/dev/null
     else
         if "$REPO_DIR/scripts/install.sh" host --root "$stage" >"$scratch/out" 2>&1; then
             echo "conflicting btmp configuration accepted: $kind" >&2; exit 1

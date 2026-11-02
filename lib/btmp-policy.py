@@ -14,6 +14,12 @@ TARGET = '/var/log/btmp'
 
 
 def inspect_size(path):
+    """Return the parsed /var/log/btmp size limit in bytes, or None if absent.
+
+    A matching stanza without a size limit returns zero. Logrotate parses the
+    policy so included files and size units follow host configuration
+    semantics; invalid or duplicate btmp stanzas raise ValueError.
+    """
     if not path.exists():
         return None
     value = str(path)
@@ -36,8 +42,12 @@ def inspect_size(path):
     sizes = []
     for block in blocks:
         if re.search(r'^\s*considering log /var/log/btmp\s*$', block, re.M):
-            size = re.search(r'log files >= ([0-9]+) are rotated earlier', block)
-            sizes.append(int(size.group(1)) if size else 0)
+            threshold_match = re.search(r'log files >= ([0-9]+) are rotated earlier', block)
+            if threshold_match is None:
+                # Logrotate reports `size` in the block header, unlike `maxsize`.
+                threshold_match = re.search(r'^/var/log/btmp\s+([0-9]+) bytes \(', block, re.M)
+            size_limit = int(threshold_match.group(1)) if threshold_match else 0
+            sizes.append(size_limit)
     if len(sizes) > 1:
         raise ValueError(f'Multiple active logrotate stanzas select {TARGET}')
     # Debug also checks live log files. Their absence or permissions do not change
@@ -72,7 +82,7 @@ def main():
         return
     current = inspect_size(args.directory)
     if current == expected:
-        print('skip' if args.plan else 'Effective btmp size policy matches')
+        print('skip' if args.plan else 'Effective btmp size limit matches')
     elif current is None and args.plan:
         print('install')
     else:
