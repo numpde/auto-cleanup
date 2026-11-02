@@ -45,7 +45,7 @@ def inspect_size(path):
             threshold_match = re.search(r'log files >= ([0-9]+) are rotated earlier', block)
             if threshold_match is None:
                 # Logrotate reports `size` in the block header, unlike `maxsize`.
-                threshold_match = re.search(r'^/var/log/btmp\s+([0-9]+) bytes \(', block, re.M)
+                threshold_match = re.search(r'^[^\n]*\s+([0-9]+) bytes \(', block)
             size_limit = int(threshold_match.group(1)) if threshold_match else 0
             sizes.append(size_limit)
     if len(sizes) > 1:
