@@ -120,6 +120,8 @@ limit are preserved, whether logrotate expresses the limit as `size` or
 An existing `size 50M` stanza is preserved as-is and does not also rotate
 monthly; logrotate requires `maxsize 50M` to combine the size cap with a
 calendar interval.
+If `/var/log/btmp` is absent, inspection rejects wildcard logrotate patterns:
+logrotate cannot establish their future matches until the file exists.
 Native inspectors reject conflicting policies before managed writes. A selected
 repository-owned fixture is refreshed on update. btmp can exceed its threshold
 between logrotate checks. APT uses the distro's existing timers.

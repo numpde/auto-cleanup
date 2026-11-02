@@ -39,15 +39,17 @@ def inspect_size(path):
     blocks = re.split(r'^rotating pattern: ', output[frame.end():], flags=re.M)[1:]
     if len(blocks) != int(frame.group(1)):
         raise ValueError(f'Cannot read logrotate rotation blocks for {path}')
+    if not os.path.exists(TARGET) and any(
+        re.search(r'[*?\[]', block.split('\n', 1)[0]) for block in blocks
+    ):
+        raise ValueError(f'Cannot determine wildcard coverage while {TARGET} is absent')
     sizes = []
     for block in blocks:
         if re.search(r'^\s*considering log /var/log/btmp\s*$', block, re.M):
-            threshold_match = re.search(r'log files >= ([0-9]+) are rotated earlier', block)
-            if threshold_match is None:
-                # Logrotate reports `size` in the block header, unlike `maxsize`.
-                threshold_match = re.search(r'^[^\n]*\s+([0-9]+) bytes \(', block)
-            size_limit = int(threshold_match.group(1)) if threshold_match else 0
-            sizes.append(size_limit)
+            maxsize = re.search(r'log files >= ([0-9]+) are rotated earlier', block)
+            size = re.search(r'^[^\n]*\s+([0-9]+) bytes \(', block)
+            limits = [int(match.group(1)) for match in (size, maxsize) if match]
+            sizes.append(min(limits) if limits else 0)
     if len(sizes) > 1:
         raise ValueError(f'Multiple active logrotate stanzas select {TARGET}')
     # Debug also checks live log files. Their absence or permissions do not change
