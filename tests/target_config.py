@@ -16,7 +16,7 @@ TARGET = dict(name='agent-mail', kind='rootless', user='test-runner',
               daemon_service=None, schedule='daily', cache_gib=None,
               container_until='24h', network_until='24h', image_until='168h',
               image_min_free_gib=0, image_protection_mode='none', image_keep_tags=[],
-              image_protection_file='/var/lib/auto-cleanup/agent-mail/images.json')
+              image_protection_file='/opt/auto-cleanup/state/agent-mail/images.json')
 assert validate_target(TARGET) == TARGET
 assert validate_target(dict(TARGET, network_until=None))['network_until'] is None
 for example in ('rootful', 'agent-mail'):

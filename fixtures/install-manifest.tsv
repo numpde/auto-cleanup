@@ -1,5 +1,5 @@
-file	0755	fixtures/bin/vps-docker-clean	/usr/local/lib/auto-cleanup/docker-clean
-file	0644	fixtures/bin/auto_cleanup_config.py	/usr/local/lib/auto-cleanup/auto_cleanup_config.py
+file	0755	fixtures/bin/vps-docker-clean	/opt/auto-cleanup/installed/docker-clean
+file	0644	fixtures/bin/auto_cleanup_config.py	/opt/auto-cleanup/installed/auto_cleanup_config.py
 template	0644	fixtures/systemd/auto-cleanup-docker@.service	/etc/systemd/system/auto-cleanup-docker@.service
 template	0644	fixtures/systemd/auto-cleanup-docker@.timer	/etc/systemd/system/auto-cleanup-docker@.timer
 conditional	0644	fixtures/journald/limits.conf	/etc/systemd/journald.conf.d/auto-cleanup-limits.conf

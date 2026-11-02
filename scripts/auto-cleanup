@@ -24,8 +24,8 @@ HOST_FILES = {
     'btmp': ('fixtures/logrotate/btmp', '/etc/logrotate.d/auto-cleanup-btmp'),
     'apt': ('fixtures/apt/10periodic-cleanup', '/etc/apt/apt.conf.d/90auto-cleanup-periodic'),
 }
-RUNTIME = '/usr/local/lib/auto-cleanup'
-CONFIG = '/etc/auto-cleanup'
+RUNTIME = '/opt/auto-cleanup/installed'
+CONFIG = '/opt/auto-cleanup/config'
 UNITS = '/etc/systemd/system'
 
 
@@ -134,6 +134,12 @@ class Installation:
         if not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', name):
             raise ValueError('target name must be a simple Linux name')
         return self.path(f'{CONFIG}/docker/{name}.json')
+
+    def refuse_previous_layout(self):
+        for path in ('/etc/auto-cleanup', '/usr/local/lib/auto-cleanup'):
+            previous = self.path(path)
+            if previous.exists() or previous.is_symlink():
+                raise ValueError(f'previous auto-cleanup layout exists at {path}; reconcile it before installing')
 
     def target(self, name):
         target = load_target(self.target_path(name), trusted=self.live)
@@ -277,7 +283,7 @@ class Installation:
         self.systemctl('stop', unit_name(target, 'service'))
 
     def duplicate_target(self, target, daemon_info):
-        reserved = (CONFIG, RUNTIME, UNITS)
+        reserved = (CONFIG, RUNTIME, UNITS, '/opt/auto-cleanup/source')
         for key in ('daemon_config', 'image_protection_file'):
             value = target[key]
             if value and any(value == prefix or value.startswith(prefix + '/') for prefix in reserved):
@@ -307,6 +313,7 @@ class Installation:
                 raise ValueError(f"daemon is already enrolled as {other['name']}")
 
     def install_target(self, migrating=False):
+        self.refuse_previous_layout()
         if self.args.config:
             target = load_target(self.args.config)
         elif self.args.name:
@@ -562,6 +569,7 @@ class Installation:
         return command(argv)
 
     def install_host(self):
+        self.refuse_previous_layout()
         selection = self.host_config()
         files = {destination: (REPO / source).read_bytes() for key, (source, destination) in HOST_FILES.items() if selection[key]}
         plans = {key: self.native_policy(key, plan=True) for key in ('apt', 'btmp') if selection[key]}

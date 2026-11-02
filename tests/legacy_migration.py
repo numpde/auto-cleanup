@@ -60,7 +60,7 @@ with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as scratch:
         if case == 'age':
             changed['image_until'] = '24h'
         elif case == 'lockpath':
-            changed['image_protection_file'] = '/var/lib/auto-cleanup/rootful/images.json'
+            changed['image_protection_file'] = '/opt/auto-cleanup/state/rootful/images.json'
         elif case in ('unknown', 'quoted', 'duplicate'):
             override = root / 'etc/default/vps-docker-clean'
             extra = {'unknown': 'UNKNOWN_SETTING=secret\n', 'quoted': 'IMAGE_PROTECTION_FILE="$(unsafe)"\n',
@@ -103,7 +103,7 @@ with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as scratch:
                 installation.migrate_target()
         except (ValueError, RuntimeError):
             assert case not in successful, case
-            assert not (root / 'etc/auto-cleanup').exists(), (case, events)
+            assert not (root / 'opt/auto-cleanup/config').exists(), (case, events)
             for destination, data in original.items():
                 assert (root / destination.lstrip('/')).read_bytes() == data, (case, destination)
             assert not any(event[0] == 'write' for event in events), (case, events)
@@ -125,8 +125,8 @@ with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as scratch:
             if case == 'dry-run':
                 for destination, data in original.items():
                     assert (root / destination.lstrip('/')).read_bytes() == data
-                assert not (root / 'etc/auto-cleanup').exists()
+                assert not (root / 'opt/auto-cleanup/config').exists()
             else:
                 assert not (root / 'usr/local/sbin/vps-docker-clean').exists()
-                assert (root / 'etc/auto-cleanup/docker/rootful.json').exists()
+                assert (root / 'opt/auto-cleanup/config/docker/rootful.json').exists()
 print('legacy migration ok')

@@ -19,7 +19,7 @@ TARGET = json.loads((REPO / 'examples/agent-mail.json').read_text())
 UNIT_DIR = '/etc/systemd/system'
 SERVICE = 'auto-cleanup-docker@agent-mail.service'
 TIMER = 'auto-cleanup-docker@agent-mail.timer'
-ARGV = ['/usr/local/lib/auto-cleanup/docker-clean', '--config', '/etc/auto-cleanup/docker/agent-mail.json']
+ARGV = ['/opt/auto-cleanup/installed/docker-clean', '--config', '/opt/auto-cleanup/config/docker/agent-mail.json']
 PROPERTIES = {
     SERVICE: {'Unit': {'FragmentPath': UNIT_DIR + '/auto-cleanup-docker@.service',
                       'DropInPaths': [UNIT_DIR + '/' + SERVICE + '.d/target.conf']},

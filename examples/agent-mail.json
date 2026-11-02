@@ -13,5 +13,5 @@
   "image_min_free_gib": 0,
   "image_protection_mode": "none",
   "image_keep_tags": [],
-  "image_protection_file": "/var/lib/auto-cleanup/agent-mail/images.json"
+  "image_protection_file": "/opt/auto-cleanup/state/agent-mail/images.json"
 }

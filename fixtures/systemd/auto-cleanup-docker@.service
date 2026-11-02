@@ -4,7 +4,7 @@ Documentation=https://github.com/numpde/auto-cleanup#readme
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/lib/auto-cleanup/docker-clean --config /etc/auto-cleanup/docker/%i.json
+ExecStart=/opt/auto-cleanup/installed/docker-clean --config /opt/auto-cleanup/config/docker/%i.json
 Nice=10
 IOSchedulingClass=idle
 TimeoutStartSec=30min

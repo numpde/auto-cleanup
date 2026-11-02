@@ -75,22 +75,26 @@ coordination state.
 ## Clone and preview
 
 ```sh
-sudo git clone https://github.com/numpde/auto-cleanup.git /opt/auto-cleanup
-cd /opt/auto-cleanup
+sudo git clone https://github.com/numpde/auto-cleanup.git /opt/auto-cleanup/source
+cd /opt/auto-cleanup/source
 sudo ./scripts/auto-cleanup host install --dry-run
 ```
 
-Use a root-owned checkout; `/opt/auto-cleanup` is the recommended location, not a
+Use a root-owned checkout; `/opt/auto-cleanup/source` is the recommended location, not a
 required path. Scheduled cleanup uses installed copies. Keep a checkout for
 installation, checks, updates and removal.
 
+This layout does not migrate earlier installations. Installation stops if the
+previous `/etc/auto-cleanup` or `/usr/local/lib/auto-cleanup` location exists;
+reconcile the previous installation before installing this layout.
+
 | Location | Purpose |
 | --- | --- |
-| `/opt/auto-cleanup/` | Recommended source checkout |
-| `/etc/auto-cleanup/` | Saved host and Docker target policies |
-| `/usr/local/lib/auto-cleanup/` | Installed cleanup runner and configuration loader |
+| `/opt/auto-cleanup/source/` | Recommended source checkout |
+| `/opt/auto-cleanup/config/` | Saved host and Docker target policies |
+| `/opt/auto-cleanup/installed/` | Installed cleanup runner and configuration loader |
 | `/etc/systemd/system/` | Cleanup service/timer templates and target drop-ins |
-| `/var/lib/auto-cleanup/NAME/` | Protection directory used by the examples; the target selects its actual path |
+| `/opt/auto-cleanup/state/NAME/` | Protection directory used by the examples; the target selects its actual path |
 
 Installed cleanup units identify auto-cleanup in their descriptions and expose
 the repository's README through systemd's `Documentation` field. Managed host
@@ -99,7 +103,7 @@ the source available for installation; `docker check` compares installed files
 with that checkout.
 
 Review [examples/host.json](examples/host.json). Its boolean `journald`, `apt`,
-and `btmp` selections are persisted at `/etc/auto-cleanup/host.json`. Set a
+and `btmp` selections are persisted at `/opt/auto-cleanup/config/host.json`. Set a
 component to `false` to leave it unmanaged. On updates, deselecting a previously
 selected component removes this repository's file; external policy remains.
 
@@ -167,7 +171,7 @@ Alias-inherited overrides are discovered by the effective manager check
 after files are installed and units reloaded. A failed check leaves the selected
 cleanup timer stopped; reconcile the override before retrying installation.
 
-The installed JSON at `/etc/auto-cleanup/docker/NAME.json` is the runtime and
+The installed JSON at `/opt/auto-cleanup/config/docker/NAME.json` is the runtime and
 lifecycle authority. It is root-owned and read-only to the cleanup account.
 Systemd runs `auto-cleanup-docker@NAME.service` as that account; one timer
 instance provides its schedule. All cleanup instances belong to the system
