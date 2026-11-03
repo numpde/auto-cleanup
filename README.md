@@ -141,10 +141,48 @@ Traefik or other containers run internally as non-root users.
 ```sh
 cp examples/agent-mail.json /tmp/agent-mail-cleanup.json
 # Edit the copied settings, including image protection.
-sudo ./scripts/auto-cleanup docker install --config /tmp/agent-mail-cleanup.json --dry-run
-sudo ./scripts/auto-cleanup docker install --config /tmp/agent-mail-cleanup.json
+sudo install -d -m 0700 /opt/auto-cleanup/reviewed
+sudo install -m 0600 /tmp/agent-mail-cleanup.json /opt/auto-cleanup/reviewed/agent-mail.json
+sudo ./scripts/auto-cleanup docker install --config /opt/auto-cleanup/reviewed/agent-mail.json --dry-run
+sudo ./scripts/auto-cleanup docker install --config /opt/auto-cleanup/reviewed/agent-mail.json
 sudo ./scripts/auto-cleanup docker check agent-mail --live
 ```
+
+To prepare configs for accessible local Docker contexts, run `make docker/configs`.
+It writes new files under `tmp/docker-configs`, leaves existing files alone,
+checks existing files against their context, and reports contexts it cannot
+inspect. Run `make docker/configs/check` to validate the files and inspect their
+engines, then review the reported settings before installation. This check does
+not verify protected tags, inventories, or systemd compatibility:
+the generated defaults permit removal of unused images older than seven days.
+Network cleanup is disabled and daemon settings are unmanaged. The directory is
+ignored by Git; back up any configs you want to keep.
+The check rejects nested target protection directories, even when an existing
+directory's permissions might permit them, to avoid order-dependent ownership.
+
+Before running privileged targets, use a root-owned checkout and copy the
+reviewed configurations to a root-owned directory whose parents are root-owned
+and not group/other writable. Each JSON filename and its `name` must match the
+engine name. This keeps the code run as root and the reviewed configuration
+protected from modification by unprivileged accounts.
+
+From that checkout, preview, enroll and check the configurations:
+
+```sh
+sudo make docker/install/preview CONFIG_DIR=/path/to/root-owned-configs
+sudo make docker/install CONFIG_DIR=/path/to/root-owned-configs
+sudo make docker/check
+```
+
+The install target repeats the preview before writing. The preview checks each
+target against the current host state, but cannot guarantee that state stays
+unchanged or that the full batch will succeed. The check target uses the
+installed registry, not the draft directory.
+
+Installation stops on the first failure. It does not enable new timers, but an
+existing timer may already be enabled; check its state. Previously active timers
+resume after a successful update. A failure may leave earlier engines enrolled;
+check them before retrying.
 
 Enroll the shared rootful daemon separately. One target covers every application
 using that daemon, including Traefik. Review the copied file before installation:
@@ -152,8 +190,10 @@ using that daemon, including Traefik. Review the copied file before installation
 ```sh
 cp examples/rootful.json /tmp/rootful-cleanup.json
 # Edit the copied settings, including image protection.
-sudo ./scripts/auto-cleanup docker install --config /tmp/rootful-cleanup.json --dry-run
-sudo ./scripts/auto-cleanup docker install --config /tmp/rootful-cleanup.json
+sudo install -d -m 0700 /opt/auto-cleanup/reviewed
+sudo install -m 0600 /tmp/rootful-cleanup.json /opt/auto-cleanup/reviewed/rootful.json
+sudo ./scripts/auto-cleanup docker install --config /opt/auto-cleanup/reviewed/rootful.json --dry-run
+sudo ./scripts/auto-cleanup docker install --config /opt/auto-cleanup/reviewed/rootful.json
 sudo ./scripts/auto-cleanup docker check rootful --live
 ```
 

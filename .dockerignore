@@ -71,10 +71,12 @@ tests/lib/**
 !tests/42_target_config.sh
 !tests/target_config.py
 !scripts/auto-cleanup
+!scripts/docker-context-configs.py
 !fixtures/systemd/auto-cleanup-docker@.service
 !fixtures/systemd/auto-cleanup-docker@.timer
 !tests/43_target_lifecycle.sh
 !tests/target_lifecycle.py
+!tests/docker_context_configs.py
 !tests/lifecycle_failures.py
 !tests/target_runtime.py
 !tests/fixtures/target-rootful.json
