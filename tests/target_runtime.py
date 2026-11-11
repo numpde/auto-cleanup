@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 import subprocess
 import socket
+import sys
+import select
 
 REPO = Path(__file__).resolve().parents[1]
 kind = 'rootful' if os.geteuid() == 0 else 'rootless'
@@ -61,6 +63,56 @@ other_config = REPO / f"tests/fixtures/target-{'rootless' if kind == 'rootful' e
 result = subprocess.run([str(REPO / 'fixtures/bin/vps-docker-clean'), '--config', str(other_config)],
                         env=env, text=True, capture_output=True, timeout=15)
 assert result.returncode != 0 and 'must run as' in result.stderr, result.stderr
+
+# Exercise the installed CLI's admission and the real descriptor inherited by
+# a shell. The held stdin is an observed barrier, not a timing assumption.
+Path(settings['image_protection_file']).chmod(0o600)
+guard = [str(REPO / 'fixtures/bin/vps-docker-clean'), '--config', str(config),
+         '--run-locked', '--endpoint', 'unix://' + settings['socket'], '--']
+holder = subprocess.Popen(guard + ['sh', '-c', 'printf "held\\n"; read answer; exit 23'],
+                          env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, text=True)
+try:
+    assert select.select([holder.stdout], [], [], 10)[0], 'guarded command did not reach its barrier'
+    assert holder.stdout.readline() == 'held\n'
+    result, log = run()
+    assert result.returncode != 0 and 'busy' in result.stderr, result.stderr
+    assert 'prune' not in log and 'image rm' not in log, log
+finally:
+    output, error = holder.communicate('release\n', timeout=10)
+assert holder.returncode == 23, (holder.returncode, output, error)
+result, log = run()
+assert result.returncode == 0, result.stderr
+
+result = subprocess.run(guard + guard + ['sh', '-c', 'exit 19'], env=env,
+                        text=True, capture_output=True, timeout=10)
+assert result.returncode == 19, result.stderr
+literal = '$(touch /tmp/auto-cleanup-must-not-execute)'
+result = subprocess.run(guard + [sys.executable, '-c', 'import sys; print(sys.argv[1])', literal],
+                        env=env, text=True, capture_output=True, timeout=10)
+assert result.returncode == 0 and result.stdout.strip() == literal, result.stderr
+
+for arguments in (guard[:-1], [*guard[:5], 'unix:///different.sock', '--', 'sh', '-c', 'echo started']):
+    result = subprocess.run(arguments, env=env, text=True, capture_output=True, timeout=10)
+    assert result.returncode != 0 and 'guarded operation' in result.stderr, result.stderr
+    assert not result.stdout and 'may be partial' not in result.stderr
+
+for changed in ({'AUTO_CLEANUP_LOCK_FD': '9999'}, {'AUTO_CLEANUP_LOCK_FD': 'not-a-descriptor'}):
+    result = subprocess.run(guard + ['sh', '-c', 'echo started'], env=dict(env, **changed),
+                            text=True, capture_output=True, timeout=10)
+    assert result.returncode != 0 and not result.stdout, result.stderr
+
+lock_path = Path(settings['image_protection_file'] + '.lock')
+lock_path.chmod(0o666)
+result = subprocess.run(guard + ['sh', '-c', 'echo started'], env=env,
+                        text=True, capture_output=True, timeout=10)
+assert result.returncode != 0 and not result.stdout and 'writable' in result.stderr
+lock_path.unlink()
+lock_path.symlink_to(settings['image_protection_file'])
+result = subprocess.run(guard + ['sh', '-c', 'echo started'], env=env,
+                        text=True, capture_output=True, timeout=10)
+assert result.returncode != 0 and not result.stdout, result.stderr
+lock_path.unlink()
 print(f'{kind} configured execution ok')
 listener.close()
 socket_path.unlink()

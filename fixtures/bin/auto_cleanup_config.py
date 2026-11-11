@@ -1,4 +1,6 @@
 """Authoritative configuration for explicitly enrolled local Docker daemons."""
+import contextlib
+import fcntl
 import json
 import datetime as dt
 import os
@@ -107,3 +109,36 @@ def verify_socket_owner(target, uid):
     metadata = os.stat(target['socket'])
     if not stat.S_ISSOCK(metadata.st_mode) or metadata.st_uid != uid:
         raise ValueError(f"Docker socket {target['socket']} must be a Unix socket owned by {target['user']}")
+
+
+def trusted_file(descriptor, description):
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(f'{description} must be a regular file')
+    if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
+        raise ValueError(f'{description} must be owned by the cleanup account and not writable by group or others')
+
+
+@contextlib.contextmanager
+def image_protection_lock(target, inherited=None):
+    """Exclude cleanup while using images; nested guarded commands share the open lock."""
+    path = str(target['image_protection_file']) + '.lock'
+    if inherited is None:
+        descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    else:
+        if not inherited.isdecimal():
+            raise ValueError('Inherited auto-cleanup lock descriptor must be a decimal file descriptor')
+        descriptor = int(inherited)
+    try:
+        trusted_file(descriptor, f'protection lock {path}')
+        observed, named = os.fstat(descriptor), os.stat(path, follow_symlinks=False)
+        if not stat.S_ISREG(named.st_mode) or (observed.st_dev, observed.st_ino) != (named.st_dev, named.st_ino):
+            raise ValueError(f'Open protection lock does not match {path}')
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError(f'Protection lock {path} is busy; deployment or another cleanup is in progress') from error
+        yield descriptor
+    finally:
+        if inherited is None:
+            os.close(descriptor)

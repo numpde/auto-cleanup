@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """Apply host retention with explicit additional image protection."""
 import datetime as dt
-import fcntl
 import json
 import os
 from pathlib import Path
 import re
-import stat
 import subprocess
 import sys
 
@@ -72,15 +70,9 @@ def container_images(target):
     return protected
 
 
-def trusted_file(descriptor, description):
-    metadata = os.fstat(descriptor)
-    if not stat.S_ISREG(metadata.st_mode):
-        raise ValueError(f"{description} must be a regular file")
-    if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
-        raise ValueError(f"{description} must be owned by the cleanup account and not writable by group or others")
-
-
 def read_inventory(path):
+    from auto_cleanup_config import trusted_file
+
     descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
     with os.fdopen(descriptor, "rb") as stream:
         trusted_file(stream.fileno(), f"protection inventory {path}")
@@ -213,7 +205,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', required=True)
     parser.add_argument('--show-policy', action='store_true')
+    parser.add_argument('--run-locked', action='store_true', help='execute a command while excluding image cleanup')
+    parser.add_argument('--endpoint', help='expected local Docker endpoint for --run-locked')
+    parser.add_argument('command', nargs=argparse.REMAINDER)
     arguments = parser.parse_args()
+    if arguments.run_locked and arguments.show_policy:
+        parser.error('--run-locked cannot be combined with --show-policy')
+    if not arguments.run_locked and (arguments.endpoint or arguments.command):
+        parser.error('--endpoint and a command require --run-locked')
     target = load_target(arguments.config, trusted=not arguments.show_policy)
     if arguments.show_policy:
         print(json.dumps(target, indent=2, sort_keys=True))
@@ -221,11 +220,37 @@ def main():
     if pwd.getpwnam(target['user']).pw_uid != os.geteuid():
         raise ValueError(f"cleanup for {target['name']} must run as {target['user']}")
     verify_socket_owner(target, os.geteuid())
+    if arguments.run_locked:
+        command = arguments.command
+        if command[:1] == ['--']:
+            command = command[1:]
+        return run_locked(target, arguments.endpoint, command)
     return run_cleanup(target)
+
+
+def run_locked(target, endpoint, command):
+    """Replace this process with the operation, retaining the cleaner's lock across exec."""
+    from auto_cleanup_config import image_protection_lock
+
+    expected = 'unix://' + target['socket']
+    if endpoint != expected:
+        raise ValueError(f'Cannot run guarded command: endpoint {endpoint!r} differs from configured {expected!r}')
+    if not command:
+        raise ValueError('A guarded operation requires a command after --')
+    environment = dict(os.environ)
+    for key in ('DOCKER_CONTEXT', 'DOCKER_HOST', 'DOCKER_TLS', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH', 'BUILDX_BUILDER', 'BUILDX_CONFIG', 'COMPOSE_BAKE'):
+        environment.pop(key, None)
+    environment['DOCKER_HOST'] = expected
+    with image_protection_lock(target, environment.get('AUTO_CLEANUP_LOCK_FD')) as descriptor:
+        os.set_inheritable(descriptor, True)
+        environment['AUTO_CLEANUP_LOCK_FD'] = str(descriptor)
+        os.execvpe(command[0], command, environment)
 
 
 def run_cleanup(target):
     """Apply a validated target; the CLI owns account and configuration admission."""
+    from auto_cleanup_config import image_protection_lock
+
     endpoint = 'unix://' + target['socket']
     cutoff = dt.datetime.now(UTC) - dt.timedelta(hours=int(target['image_until'][:-1]))
     protection = ImageProtection(target)
@@ -248,13 +273,7 @@ def run_cleanup(target):
         raise ValueError('Docker did not report an absolute storage directory')
     available_bytes(root)
     # Publishers must hold this same stable lock through publication and deployment.
-    descriptor = os.open(str(protection.path) + ".lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(descriptor, "r+") as lock:
-        trusted_file(lock.fileno(), f"protection lock {protection.path}.lock")
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            raise RuntimeError(f"Protection lock {protection.path}.lock is busy; deployment or another cleanup is in progress") from error
+    with image_protection_lock(target):
         protection.load(info["ID"])
         container_ids = container_images(target)
         failures = False
@@ -280,5 +299,8 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except (OSError, ValueError, KeyError, TypeError, OverflowError, subprocess.TimeoutExpired, RuntimeError) as error:
-        print(f"Cannot complete Docker cleanup: {error}. Cleanup may be partial if removal has started.", file=sys.stderr)
+        if '--run-locked' in sys.argv[1:]:
+            print(f'Cannot start guarded operation: {error}. Command was not started.', file=sys.stderr)
+        else:
+            print(f"Cannot complete Docker cleanup: {error}. Cleanup may be partial if removal has started.", file=sys.stderr)
         sys.exit(1)
