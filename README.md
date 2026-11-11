@@ -315,31 +315,6 @@ Missing, expired, changed, wrong-daemon or unresolved inventory stops cleanup.
 The runner rechecks inventory before mutations. Clients ignoring the lock can
 race deployment and cleanup.
 
-An enrolled daemon's owner can run an operation under that same lock:
-
-```sh
-/opt/auto-cleanup/installed/docker-clean \
-  --config /opt/auto-cleanup/config/docker/dapp32.json \
-  --run-locked --endpoint unix:///run/user/1002/docker.sock -- \
-  make -C /home/dapp32/deploy/dapp32 base-images/pull DOCKER_CONTEXT=rootless
-```
-
-Use the target's actual config, account and socket. The guard checks them before
-starting the command; it neither cleans resources nor changes retention policy.
-It replaces itself with the command, preserving its exit status and an inherited
-lock descriptor. Nested guards can reuse that descriptor. Commands must retain
-`AUTO_CLEANUP_LOCK_FD` and the corresponding open descriptor; closing it ends
-protection. Set deadlines in the operation that owns work and cleanup.
-
-Hold the guard across acquisition **and subsequent image use**, not just the
-download: a freshly pulled old image may already be eligible for reclamation.
-The dapp32 `base-images/pull` target accepts `AUTO_CLEANUP_CONFIG` to guard a
-standalone acquisition. An updater must wrap its complete acquisition/build/
-deployment sequence. Once the command exits, unreferenced bases remain eligible
-under the configured aggressive retention policy. Rollback images still need
-configured keep-tags or inventory protection. The lock cannot coordinate clients
-that ignore it or promise recovery from a host crash or forced termination.
-
 ### Daemon logging and cache configuration
 
 With a non-null `daemon_config`, installation merges `local` logging defaults
